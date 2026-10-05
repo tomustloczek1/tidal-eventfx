@@ -1,0 +1,365 @@
+{
+  "_about": "EventFX rules: which params each device exposes to Tidal. Device keys: your name for the device (e.g. HPF) or its original name (e.g. Auto Filter). Edit, then click update in EventFX. Keys starting with _ are comments.",
+  "_maxChain": "params per device inside the rack chains (main one and auto-on included)",
+  "maxChain": 4,
+  "_maxTrack": "params per device on the track after the rack",
+  "maxTrack": 2,
+  "_skipDevices": "never mapped",
+  "skipDevices": [
+    "EQ Eight",
+    "Glue Compressor",
+    "Limiter",
+    "ChainWatch"
+  ],
+  "_alwaysOn": "devices kept on all the time (like SuperDirt lpf/hpf); all others are on only while a note uses them",
+  "alwaysOn": [],
+  "_primaryByDevice": "main param (brings the effect in from zero); otherwise the first of primaryCandidates",
+  "primaryByDevice": {
+    "Gate": "Threshold",
+    "Auto Pan-Tremolo": "Amount",
+    "Erosion": "Amount",
+    "Utility": "Output",
+    "HPF": "Frequency",
+    "LPF": "Frequency",
+    "BPF": "Frequency",
+    "Auto Filter": "Frequency",
+    "Color Limiter": "Loudness",
+    "Vinyl Distortion": "Tracing Drive",
+    "Filter Delay": "2 Volume"
+  },
+  "primaryCandidates": [
+    "Dry/Wet",
+    "Dry / Wet",
+    "Dry Wet",
+    "DryWet",
+    "Mix",
+    "Amount",
+    "Chance",
+    "Threshold",
+    "Decay",
+    "Output"
+  ],
+  "_autoOn": "param switched to max whenever an event has the main param",
+  "autoOn": {
+    "BPF": "Dry/Wet"
+  },
+  "_preferByDevice": "params picked first after the main one, in this order",
+  "preferByDevice": {
+    "Re-Enveloper": [
+      "C/E Fact"
+    ],
+    "Gate": [
+      "Release",
+      "Hold",
+      "Floor"
+    ],
+    "Drum Buss": [
+      "Drive",
+      "Transients",
+      "Boom Amt"
+    ],
+    "HPF": [
+      "Resonance",
+      "Drive",
+      "Filter Morph"
+    ],
+    "LPF": [
+      "Resonance",
+      "Drive",
+      "Filter Morph"
+    ],
+    "BPF": [
+      "Resonance",
+      "Drive"
+    ],
+    "Auto Filter": [
+      "Resonance",
+      "Drive"
+    ],
+    "Saturator": [
+      "Drive",
+      "Color Freq",
+      "Output"
+    ],
+    "Dynamic Tube": [
+      "Drive",
+      "Bias",
+      "Tone"
+    ],
+    "Overdrive": [
+      "Drive",
+      "Tone",
+      "Filter Freq"
+    ],
+    "Erosion": [
+      "Frequency",
+      "Noise Blend",
+      "Filter Width"
+    ],
+    "Redux": [
+      "Bit Depth",
+      "Sample Rate",
+      "Jitter"
+    ],
+    "Color Limiter": [
+      "Saturation",
+      "Color",
+      "Ceiling"
+    ],
+    "Pitch Hack": [
+      "Coarse",
+      "Reverse",
+      "Recycle"
+    ],
+    "Shifter": [
+      "Pitch Coarse",
+      "FShift Coarse",
+      "RM Coarse"
+    ],
+    "Resonators": [
+      "Frequency",
+      "Decay",
+      "Color"
+    ],
+    "Utility": [
+      "Balance",
+      "Stereo Width",
+      "Bass Freq"
+    ],
+    "Roar": [
+      "Drive"
+    ],
+    "Vinyl Distortion": [
+      "Crackle Volume"
+    ],
+    "Corpus": [
+      "Transpose"
+    ],
+    "Spectral Resonator": [
+      "Transpose"
+    ],
+    "Grain Delay": [
+      "Pitch"
+    ],
+    "Chorus-Ensemble": [
+      "Amount"
+    ],
+    "Phaser-Flanger": [
+      "Center Freq"
+    ],
+    "Auto Pan-Tremolo": [
+      "Frequency"
+    ],
+    "Filter Delay": [
+      "2 Feedback"
+    ],
+    "Gated Delay": [
+      "Feedback"
+    ],
+    "Echo": [
+      "Feedback"
+    ],
+    "Spectral Time": [
+      "Delay Feedback"
+    ],
+    "Spectral Blur": [
+      "Halo"
+    ]
+  },
+  "_neutralPrimary": "resting position (0..1) of main params with these names; everything else rests where the knob is",
+  "neutralPrimary": {
+    "Dry/Wet": 0,
+    "Dry / Wet": 0,
+    "Dry Wet": 0,
+    "DryWet": 0,
+    "Mix": 0,
+    "Amount": 0,
+    "Chance": 0,
+    "Threshold": 0,
+    "Decay": 0
+  },
+  "_always": "picked next on any device",
+  "always": [
+    "Gain",
+    "Drive",
+    "Frequency",
+    "Resonance"
+  ],
+  "skipParams": [
+    "Device On"
+  ],
+  "skipQuantized": true,
+  "_reserved": "names taken in Tidal/Haskell: a colliding name gets suffix A",
+  "reserved": [
+    "delay",
+    "echo",
+    "amp",
+    "gain",
+    "shape",
+    "crush",
+    "coarse",
+    "cutoff",
+    "resonance",
+    "room",
+    "size",
+    "dry",
+    "orbit",
+    "pan",
+    "legato",
+    "sustain",
+    "speed",
+    "accelerate",
+    "squiz",
+    "distort",
+    "triode",
+    "krush",
+    "kcutoff",
+    "ring",
+    "lpf",
+    "hpf",
+    "bpf",
+    "djf",
+    "vowel",
+    "octave",
+    "detune",
+    "voice",
+    "note",
+    "n",
+    "s",
+    "sound",
+    "cps",
+    "nudge",
+    "hold",
+    "release",
+    "attack",
+    "comb",
+    "smear",
+    "scram",
+    "binshift",
+    "hbrick",
+    "lbrick",
+    "waveloss",
+    "freeze",
+    "real",
+    "imag",
+    "enhance",
+    "partials",
+    "xsdelay",
+    "tsdelay",
+    "fshift",
+    "fshiftnote",
+    "fshiftphase",
+    "octer",
+    "octersub",
+    "octersubsub",
+    "ringf",
+    "ringdf",
+    "leslie",
+    "lrate",
+    "lsize",
+    "phaserrate",
+    "phaserdepth",
+    "tremolorate",
+    "tremolodepth",
+    "delaytime",
+    "delayfeedback",
+    "lock",
+    "cut",
+    "unit",
+    "begin",
+    "end",
+    "loop",
+    "channel",
+    "velocity",
+    "midichan",
+    "ccn",
+    "ccv",
+    "filter",
+    "map",
+    "min",
+    "max",
+    "div",
+    "mod",
+    "id",
+    "length",
+    "reverse",
+    "rev",
+    "every",
+    "stut",
+    "chop",
+    "striate",
+    "slice",
+    "splice",
+    "fast",
+    "slow",
+    "hurry",
+    "range",
+    "degrade",
+    "sometimes",
+    "often",
+    "rarely",
+    "always",
+    "never",
+    "run",
+    "scan",
+    "irand",
+    "rand",
+    "choose",
+    "cycle",
+    "sine",
+    "square",
+    "tri",
+    "saw",
+    "ply",
+    "off",
+    "superimpose",
+    "layer",
+    "stack",
+    "cat",
+    "fastcat",
+    "euclid",
+    "swing",
+    "ghost",
+    "inside",
+    "outside",
+    "arp",
+    "rolled",
+    "chunk",
+    "iter",
+    "palindrome",
+    "jux",
+    "bite",
+    "chew",
+    "squeeze",
+    "ur",
+    "fix",
+    "unfix",
+    "sew",
+    "stitch",
+    "while",
+    "mask",
+    "struct",
+    "segment",
+    "toScale",
+    "scale",
+    "quantise",
+    "smooth",
+    "select",
+    "wchoose",
+    "randcat",
+    "degradeBy",
+    "trunc",
+    "linger",
+    "brak",
+    "shuffle",
+    "bpm",
+    "m",
+    "ccT",
+    "ccEvent",
+    "toMidi",
+    "toMidiWith",
+    "gate",
+    "fxCC",
+    "fxOn"
+  ]
+}

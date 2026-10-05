@@ -1,0 +1,9 @@
+# macOS
+.DS_Store
+# backups made by scripts/install.sh
+*.backup-*
+# Python bytecode of the Remote Script
+__pycache__/
+*.pyc
+# Live analysis files
+*.asd
