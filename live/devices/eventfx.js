@@ -48,15 +48,45 @@ autowatch = 1;
 inlets = 1;
 outlets = 2;
 
-// home folder taken from where this device lives (/Users/<name>/Music/...), so the repo works for anyone
-var HOME = (function () {
-    var m = /^(?:[^\/:]+:)?(\/Users\/[^\/]+)/.exec(String(this.patcher && this.patcher.filepath));
-    return m ? m[1] : null;
-})();
-var TIDAL_DIR = (HOME || "") + "/.config/tidal/";
-var LIB_FILE = TIDAL_DIR + "fx-library.json";     // FX library: names, CC + resting values per track
-var RULES_FILE = TIDAL_DIR + "fx-rules.json";     // which params a device exposes (optional)
-var TIDAL_FILE = TIDAL_DIR + "toolz-fx.tidal";    // written by update
+// home folder: from where this device lives (/Users/<name>/Music/...), otherwise the account under
+// /Users that has ~/.config/tidal/toolz.tidal - so the repo works for anyone. Found at init.
+var HOME = null;
+var TIDAL_DIR = "", LIB_FILE = "", RULES_FILE = "", TIDAL_FILE = "";
+var devicePath = "";
+
+function findHome() {
+    if (HOME) { return HOME; }
+    try { devicePath = String(this.patcher.filepath); } catch (err) { devicePath = ""; }
+    var m = /^(?:[^\/:]+:)?(\/Users\/[^\/]+)/.exec(devicePath);
+    if (m) {
+        HOME = m[1];
+    } else {
+        try {
+            var dir = new Folder("/Users");
+            dir.typelist = [];
+            while (!dir.end && !HOME) {
+                var n = dir.filename;
+                if (n && n.charAt(0) !== ".") {
+                    var probe = new File("/Users/" + n + "/.config/tidal/toolz.tidal", "read");
+                    if (probe.isopen) { probe.close(); HOME = "/Users/" + n; }
+                }
+                dir.next();
+            }
+            dir.close();
+        } catch (err2) { }
+    }
+    if (HOME) {
+        TIDAL_DIR = HOME + "/.config/tidal/";
+        LIB_FILE = TIDAL_DIR + "fx-library.json";      // FX library: names, CC + resting values per track
+        RULES_FILE = TIDAL_DIR + "fx-rules.json";      // which params a device exposes (optional)
+        TIDAL_FILE = TIDAL_DIR + "toolz-fx.tidal";     // written by update
+    }
+    return HOME;
+}
+
+function noHome(what) {
+    say(what + ": can't find ~/.config/tidal (device path: \"" + devicePath + "\")");
+}
 var MARK_CC = 119;          // value marker: picks the chain for the next note, its CCs follow
 var SEL_CC = 118;           // selector marker: moves the Chain Selector (sent shortly before the note)
 var PICK_MAX_AGE = 500;     // ms: a picked chain waiting longer than this for its selector marker is dropped
@@ -892,6 +922,7 @@ function helper() {
 // ---- commands: update / rest / neutral ------------------------------------------
 // update: chain 1 + track effects -> library (names, CC per track, resting values) -> files -> rebuild
 function update(note) {
+    if (!findHome()) { noHome("update"); return; }
     if (held > 0) { say("update: notes are playing - stop first"); return; }
     if (mirror) { say("update: still mirroring - wait"); return; }
     var t0 = now();
@@ -974,6 +1005,7 @@ function chains(n) {
 // (click [neutral] first, then turn the knobs you want to change, then [rest]);
 // main params listed in neutralPrimary (Dry/Wet, Amount...) keep their fixed resting value
 function rest() {
+    if (!findHome()) { noHome("rest"); return; }
     if (held > 0) { say("rest: notes are playing - stop first"); return; }
     var ch = trackChannel(), rules = readRules(), lib = readJson(LIB_FILE);
     if (!ch || !lib || !lib.tracks[String(ch)]) { say("rest: no palette for this track - click update"); return; }
@@ -1047,7 +1079,7 @@ function build() {
     api = null;
     cache = {};
 
-    if (!HOME) { say("can't tell the home folder from this device's path - is EventFX.amxd in the User Library?"); return; }
+    if (!findHome()) { noHome("init"); return; }
     var ch = trackChannel();
     if (!ch) { say("set the track number (1-16) in the 'channel' box, then click update"); return; }
     var lib = readJson(LIB_FILE);
