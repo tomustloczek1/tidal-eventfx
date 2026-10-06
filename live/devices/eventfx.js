@@ -13,6 +13,7 @@
 //   neutral           - every mapped param in every chain back to its resting value
 //   chains <n>        - add chains up to n (filled by the mirror); zones + removing chains: by hand
 //   channel <n>       - from the 'channel' numbox: re-register this track's number
+//   inspect <device>  - list a device's parameters (names for fx-rules.json) in the Max console
 //   cc <value> <num>  - every incoming CC ([ctlin] -> [pack 0 0] -> [prepend cc])
 //   note <pitch> <vel> - every note on / off ([notein] -> [pack 0 0] -> [prepend note])
 //   browse 0|1        - 1: no rotation, every note plays in rack chain 1 (auditioning presets
@@ -419,9 +420,9 @@ function chooseParams(dev, rules) {
     for (i = 0; i < n; i++) {
         var q = pars[i];
         if (i === ip || i === ia || has(rules.skipParams, q.name)) { continue; }
-        if (rules.skipQuantized && q.quantized) { continue; }
         var pi = -1;
         for (var j = 0; j < prefer.length; j++) { if (prefer[j] === q.name) { pi = j; break; } }
+        if (rules.skipQuantized && q.quantized && pi < 0) { continue; }   // stepped: only when asked for
         var group = pi >= 0 ? 0 : (has(rules.always, q.name) ? 1 : 2);
         cand.push({ par: q, key: group * 100000 + (pi >= 0 ? pi : 0) * 1000 + i });
     }
@@ -919,6 +920,38 @@ function helper() {
     mirrorStep();
 }
 
+// inspect <device name>: list every parameter of that device (rack chain 1 or the track) as the
+// LOM names it - for writing primaryByDevice / preferByDevice in fx-rules.json
+function inspect() {
+    var want = arrayfromargs(arguments).join(" ");
+    if (!want) { say("inspect: usage 'inspect Shifter'"); return; }
+    calls = 0; api = null;
+    var paths = [], tpath = "this_device canonical_parent", nd = go(tpath).getcount("devices"), d, p;
+    for (d = 0; d < nd; d++) {
+        p = tpath + " devices " + d;
+        go(p);
+        if (num(api.get("can_have_chains")) === 1) {
+            var cp = p + " chains 0", nc = go(cp).getcount("devices");
+            for (var c = 0; c < nc; c++) { paths.push(cp + " devices " + c); }
+        } else {
+            paths.push(p);
+        }
+    }
+    for (d = 0; d < paths.length; d++) {
+        go(paths[d]);
+        if (nameOf(api) !== want) { continue; }
+        var n = api.getcount("parameters"), out = [];
+        for (p = 0; p < n; p++) {
+            go(paths[d] + " parameters " + p);
+            out.push(p + " " + nameOf(api) + (num(api.get("is_quantized")) === 1 ? " [stepped]" : ""));
+        }
+        post("EventFX: params of " + want + ":\n  " + out.join("\n  ") + "\n");
+        say("inspect: " + n + " parameters of " + want + " listed in the Max console");
+        return;
+    }
+    say("inspect: no device named \"" + want + "\" in chain 1 or on the track");
+}
+
 // ---- commands: update / rest / neutral ------------------------------------------
 // update: chain 1 + track effects -> library (names, CC per track, resting values) -> files -> rebuild
 function update(note) {
@@ -1136,9 +1169,13 @@ function build() {
         params[e.cc] = p;
     }
 
-    // a rack is expected but not found yet -> Live is probably still loading
-    if (!scan.rackName && missing.length && retries < MAX_RETRIES) {
-        retryLater("rack not found yet");
+    // a rack is expected but not there: Live may still be loading (retry a few times), or this
+    // track simply has no tidal rack (EventFX dropped on an empty track)
+    if (!scan.rackName && missing.length) {
+        if (retries < 3) { retryLater("rack not found yet"); return; }
+        ready = false;
+        say("no Instrument Rack on this track - EventFX needs the tidal rack right after it " +
+            "(duplicate a tidal track instead), then click reload");
         return;
     }
 

@@ -485,6 +485,31 @@
       "device": "Amp",
       "param": "Dry/Wet",
       "occurrence": 0
+    },
+    "shifterLfoAmountHz": {
+      "device": "Shifter",
+      "param": "Lfo Amount Hz",
+      "occurrence": 0
+    },
+    "shifterLfoAmountSt": {
+      "device": "Shifter",
+      "param": "Lfo Amount St",
+      "occurrence": 0
+    },
+    "shifterLfoRateHz": {
+      "device": "Shifter",
+      "param": "Lfo Rate Hz",
+      "occurrence": 0
+    },
+    "shifterModFine": {
+      "device": "Shifter",
+      "param": "Mod Fine",
+      "occurrence": 0
+    },
+    "shifterDelayFeedback": {
+      "device": "Shifter",
+      "param": "Delay Feedback",
+      "occurrence": 0
     }
   },
   "tracks": {
@@ -696,7 +721,7 @@
           "param": "Frequency",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "hpfResonance": {
           "cc": 16,
@@ -712,7 +737,7 @@
           "param": "Resonance",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "hpfFilterMorph": {
           "cc": 17,
@@ -728,7 +753,7 @@
           "param": "Filter Morph",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "hpfDrive": {
           "cc": 18,
@@ -744,7 +769,7 @@
           "param": "Drive",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "saturator": {
           "cc": 22,
@@ -760,7 +785,7 @@
           "param": "Dry/Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "saturatorDrive": {
           "cc": 19,
@@ -776,7 +801,7 @@
           "param": "Drive",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "saturatorColorFreq": {
           "cc": 20,
@@ -792,7 +817,7 @@
           "param": "Color Freq",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "saturatorOutput": {
           "cc": 21,
@@ -808,7 +833,7 @@
           "param": "Output",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "dynamicTube": {
           "cc": 23,
@@ -1016,7 +1041,7 @@
           "param": "Dry/Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "reduxSampleRate": {
           "cc": 36,
@@ -1032,7 +1057,7 @@
           "param": "Sample Rate",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "reduxJitter": {
           "cc": 37,
@@ -1048,7 +1073,7 @@
           "param": "Jitter",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "reduxBitDepth": {
           "cc": 39,
@@ -1064,7 +1089,7 @@
           "param": "Bit Depth",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "colorLimiter": {
           "cc": 42,
@@ -1197,18 +1222,18 @@
         "shifter": {
           "cc": 52,
           "tier": "chain",
-          "order": 11,
+          "order": 3,
           "primary": true,
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0,
           "device": "Shifter",
           "param": "Dry/Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791291287982
         },
         "shifterPitchCoarse": {
           "cc": 49,
@@ -1245,18 +1270,18 @@
         "shifterRmCoarse": {
           "cc": 51,
           "tier": "chain",
-          "order": 11,
+          "order": 3,
           "primary": false,
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0.75,
           "device": "Shifter",
           "param": "RM Coarse",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791291287982
         },
         "resonators": {
           "cc": 56,
@@ -1325,7 +1350,7 @@
         "bpfA": {
           "cc": 57,
           "tier": "chain",
-          "order": 3,
+          "order": 4,
           "primary": true,
           "min": 0,
           "max": 1,
@@ -1336,12 +1361,12 @@
           "param": "Frequency",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "bpfResonance": {
           "cc": 58,
           "tier": "chain",
-          "order": 3,
+          "order": 4,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1352,12 +1377,12 @@
           "param": "Resonance",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "bpfDrive": {
           "cc": 59,
           "tier": "chain",
-          "order": 3,
+          "order": 4,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1368,12 +1393,12 @@
           "param": "Drive",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "lpfA": {
           "cc": 61,
           "tier": "chain",
-          "order": 4,
+          "order": 5,
           "primary": true,
           "min": 0,
           "max": 1,
@@ -1384,12 +1409,12 @@
           "param": "Frequency",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "lpfResonance": {
           "cc": 62,
           "tier": "chain",
-          "order": 4,
+          "order": 5,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1400,12 +1425,12 @@
           "param": "Resonance",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "lpfFilterMorph": {
           "cc": 63,
           "tier": "chain",
-          "order": 4,
+          "order": 5,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1416,12 +1441,12 @@
           "param": "Filter Morph",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "lpfDrive": {
           "cc": 65,
           "tier": "chain",
-          "order": 4,
+          "order": 5,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1432,12 +1457,12 @@
           "param": "Drive",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "utility": {
           "cc": 69,
           "tier": "chain",
-          "order": 5,
+          "order": 6,
           "primary": true,
           "min": -1,
           "max": 1,
@@ -1448,12 +1473,12 @@
           "param": "Output",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "utilityStereoWidth": {
           "cc": 66,
           "tier": "chain",
-          "order": 5,
+          "order": 6,
           "primary": false,
           "min": 0,
           "max": 2,
@@ -1464,12 +1489,12 @@
           "param": "Stereo Width",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "utilityBassFreq": {
           "cc": 67,
           "tier": "chain",
-          "order": 5,
+          "order": 6,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1480,12 +1505,12 @@
           "param": "Bass Freq",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "utilityBalance": {
           "cc": 68,
           "tier": "chain",
-          "order": 5,
+          "order": 6,
           "primary": false,
           "min": -1,
           "max": 1,
@@ -1496,7 +1521,7 @@
           "param": "Balance",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "roar": {
           "cc": 71,
@@ -1821,7 +1846,7 @@
         "echoA": {
           "cc": 91,
           "tier": "track",
-          "order": 6,
+          "order": 7,
           "primary": true,
           "min": 0,
           "max": 1,
@@ -1832,12 +1857,12 @@
           "param": "Dry Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "echoFeedback": {
           "cc": 90,
           "tier": "track",
-          "order": 6,
+          "order": 7,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1848,7 +1873,7 @@
           "param": "Feedback",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791238162295
+          "lastSeen": 1791291287982
         },
         "spectralTime": {
           "cc": 93,
@@ -2041,6 +2066,86 @@
           "alwaysOn": false,
           "inPalette": false,
           "lastSeen": 1791112378348
+        },
+        "shifterLfoAmountHz": {
+          "cc": 108,
+          "rest": 0,
+          "device": "Shifter",
+          "param": "Lfo Amount Hz",
+          "occurrence": 0,
+          "tier": "chain",
+          "order": 3,
+          "primary": false,
+          "min": 0,
+          "max": 1,
+          "quantized": false,
+          "alwaysOn": false,
+          "inPalette": false,
+          "lastSeen": 1791284998605
+        },
+        "shifterLfoAmountSt": {
+          "cc": 109,
+          "rest": 0,
+          "device": "Shifter",
+          "param": "Lfo Amount St",
+          "occurrence": 0,
+          "tier": "chain",
+          "order": 3,
+          "primary": false,
+          "min": 0,
+          "max": 1,
+          "quantized": false,
+          "alwaysOn": false,
+          "inPalette": false,
+          "lastSeen": 1791284998605
+        },
+        "shifterLfoRateHz": {
+          "cc": 110,
+          "rest": 0.4593089520931244,
+          "device": "Shifter",
+          "param": "Lfo Rate Hz",
+          "occurrence": 0,
+          "tier": "chain",
+          "order": 3,
+          "primary": false,
+          "min": 0,
+          "max": 1,
+          "quantized": false,
+          "alwaysOn": false,
+          "inPalette": false,
+          "lastSeen": 1791284998605
+        },
+        "shifterModFine": {
+          "cc": 111,
+          "rest": 0.5079365372657776,
+          "device": "Shifter",
+          "param": "Mod Fine",
+          "occurrence": 0,
+          "tier": "chain",
+          "order": 3,
+          "primary": false,
+          "min": 0,
+          "max": 1,
+          "quantized": false,
+          "alwaysOn": false,
+          "inPalette": true,
+          "lastSeen": 1791291287982
+        },
+        "shifterDelayFeedback": {
+          "cc": 112,
+          "rest": 0,
+          "device": "Shifter",
+          "param": "Delay Feedback",
+          "occurrence": 0,
+          "tier": "chain",
+          "order": 3,
+          "primary": false,
+          "min": 0,
+          "max": 1,
+          "quantized": false,
+          "alwaysOn": false,
+          "inPalette": true,
+          "lastSeen": 1791291287982
         }
       },
       "on": [
@@ -2052,7 +2157,7 @@
           "device": "BPF",
           "param": "Dry/Wet",
           "occurrence": 0,
-          "order": 3,
+          "order": 4,
           "min": 0,
           "max": 1,
           "alwaysOn": false

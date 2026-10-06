@@ -25,7 +25,8 @@
     "Auto Filter": "Frequency",
     "Color Limiter": "Loudness",
     "Vinyl Distortion": "Tracing Drive",
-    "Filter Delay": "2 Volume"
+    "Filter Delay": "2 Volume",
+    "Shifter": "Dry/Wet"
   },
   "primaryCandidates": [
     "Dry/Wet",
@@ -110,11 +111,9 @@
       "Coarse",
       "Reverse",
       "Recycle"
-    ],
+    ], 
     "Shifter": [
-      "Pitch Coarse",
-      "FShift Coarse",
-      "RM Coarse"
+      "RM Coarse", "Mod Fine", "Delay Feedback"
     ],
     "Resonators": [
       "Frequency",
