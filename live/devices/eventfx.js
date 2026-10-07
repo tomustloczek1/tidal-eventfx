@@ -13,6 +13,8 @@
 //   neutral           - every mapped param in every chain back to its resting value
 //   chains <n>        - add chains up to n (filled by the mirror); zones + removing chains: by hand
 //   channel <n>       - from the 'channel' numbox: re-register this track's number
+//   refill            - like update, but loads the preset instruments/racks again in chains 2..N
+//                       (instruments loaded from a preset come from the browser, not as copies)
 //   inspect <device>  - list a device's parameters (names for fx-rules.json) in the Max console
 //   cc <value> <num>  - every incoming CC ([ctlin] -> [pack 0 0] -> [prepend cc])
 //   note <pitch> <vel> - every note on / off ([notein] -> [pack 0 0] -> [prepend note])
@@ -737,12 +739,29 @@ function writeTidal(lib) {
 // ---- mirror: chains 2..N follow chain 1 (structure + values) ----------------------
 // Native devices are inserted through the LOM, Max devices / plug-ins (and ChainWatch) through
 // EventFXHelper (Remote Script, OSC over [udpsend] / [udpreceive] -> [prepend helper]).
-var HELPER_TIMEOUT_MS = 8000;
+var refillNext = false;     // set by [refill]: the next mirror reloads preset devices in chains 2..N
+var HELPER_TIMEOUT_MS = 15000;           // the helper itself gives up after ~12 s (kits with samples load slowly)
 var mirror = null;          // state while mirroring
 var helperSeq = 0;
 
 function isNative(d) { return d.cls.indexOf("Mx") !== 0 && d.cls.indexOf("Plugin") < 0; }
 function sameDev(a, b) { return a.name === b.name && a.cls === b.cls; }
+
+// an instrument or rack whose name is not the device's own name was loaded from a preset
+// (Live names a device after the preset): it is loaded from the browser in every chain, so pads,
+// samples, inner racks and plug-in state come along - copying parameters can't do that
+function isPreset(d) { return (d.type === 1 || d.racks) && d.name !== d.disp; }
+
+function askHelper(cmd, at, d) {
+    var M = mirror;
+    M.waitId = ++helperSeq;
+    outlet(1, cmd, M.waitId, M.track, M.k, at, d.name, d.cls, isPreset(d) ? "preset" : "device");
+    var id = M.waitId;
+    M.timer = new Task(function () {
+        if (mirror && mirror.waitId === id) { endMirror("EventFXHelper did not answer - is it set as Control Surface?"); }
+    }, this);
+    M.timer.schedule(HELPER_TIMEOUT_MS);
+}
 
 function findRack() {
     var tpath = "this_device canonical_parent", n = go(tpath).getcount("devices");
@@ -762,7 +781,8 @@ function chainDevices(k) {
     var cpath = mirror.rack + " chains " + k, n = go(cpath).getcount("devices"), out = [];
     for (var i = 0; i < n; i++) {
         go(cpath + " devices " + i);
-        out.push({ name: nameOf(api), cls: str(api.get("class_name")), disp: str(api.get("class_display_name")) });
+        out.push({ name: nameOf(api), cls: str(api.get("class_name")), disp: str(api.get("class_display_name")),
+                   type: num(api.get("type")), racks: num(api.get("can_have_chains")) === 1 });
     }
     return out;
 }
@@ -832,7 +852,8 @@ function startMirror(rest, onDone) {
     var rack = findRack();
     if (!rack) { onDone("no rack"); return; }
     mirror = { rack: rack, track: trackIndex(), k: 0, n: go(rack).getcount("chains"), onDone: onDone,
-               inserted: 0, deleted: 0, loaded: 0, writes: 0, failed: [], waitId: 0, timer: null, ops: 0, refused: 0, refusedNames: [], t0: now() };
+               inserted: 0, deleted: 0, loaded: 0, writes: 0, failed: [], waitId: 0, timer: null, ops: 0, refused: 0, refusedNames: [], refill: refillNext, refilled: {}, t0: now() };
+    refillNext = false;
     mirror.tpl = chainDevices(0);
     var last = mirror.tpl[mirror.tpl.length - 1];
     if (!last || last.name !== "ChainWatch") {
@@ -848,6 +869,15 @@ function mirrorStep() {
     var M = mirror;
     while (M && M.k < M.n) {
         var cpath = M.rack + " chains " + M.k;
+        if (M.refill && M.k > 0 && !M.refilled[M.k]) {     // refill: drop preset devices, the mirror reloads them
+            M.refilled[M.k] = true;
+            var cur = chainDevices(M.k);
+            for (var r = cur.length - 1; r >= 0; r--) {
+                for (var q = 0; q < M.tpl.length; q++) {
+                    if (isPreset(M.tpl[q]) && sameDev(cur[r], M.tpl[q])) { go(cpath).call("delete_device", r); M.deleted++; break; }
+                }
+            }
+        }
         var op = nextOp(M.tpl, chainDevices(M.k));
         if (!op) { syncValues(M.k); M.k++; M.ops = 0; continue; }
         if (++M.ops > 3 * M.tpl.length + 20) {        // a device that never ends up matching (renamed?)
@@ -862,6 +892,19 @@ function mirrorStep() {
             continue;
         }
         var d = M.tpl[op.t], before = go(cpath).getcount("devices");
+        if (isPreset(d)) {
+            if (op.index > 0) { askHelper("/load", op.index - 1, d); return; }
+            // first in the chain: insert the plain device, then hot-swap the preset onto it
+            go(cpath).call("insert_device", d.disp, 0);
+            if (go(cpath).getcount("devices") !== before + 1) {
+                M.failed.push("chain " + (M.k + 1) + ": Live refused " + d.disp + " at 0");
+                M.k++; M.ops = 0;
+                continue;
+            }
+            M.inserted++;
+            askHelper("/swap", 0, d);
+            return;
+        }
         if (isNative(d)) {
             go(cpath).call("insert_device", d.disp, op.index);
             if (go(cpath).getcount("devices") !== before + 1) {
@@ -878,13 +921,7 @@ function mirrorStep() {
             M.k++;
             continue;
         }
-        M.waitId = ++helperSeq;
-        outlet(1, "/load", M.waitId, M.track, M.k, op.index - 1, d.name);
-        var id = M.waitId;
-        M.timer = new Task(function () {
-            if (mirror && mirror.waitId === id) { endMirror("EventFXHelper did not answer - is it set as Control Surface?"); }
-        }, this);
-        M.timer.schedule(HELPER_TIMEOUT_MS);
+        askHelper("/load", op.index - 1, d);
         return;                                   // continues in helper() when the device is there
     }
     if (M) { endMirror(null); }
@@ -914,7 +951,12 @@ function helper() {
     if (a[2]) {
         mirror.loaded++;
     } else {
-        mirror.failed.push("chain " + (mirror.k + 1) + ": " + a.slice(4).join(" "));
+        var why = a.slice(4).join(" "), d0 = null;
+        for (var t = 0; t < mirror.tpl.length; t++) { if (why.indexOf("'" + mirror.tpl[t].name + "'") >= 0) { d0 = mirror.tpl[t]; } }
+        if (d0 && isPreset(d0) && why.indexOf("not in the browser") >= 0) {
+            why += " - save it from chain 1 as a preset in the User Library (save button on the device), same name";
+        }
+        mirror.failed.push("chain " + (mirror.k + 1) + ": " + why);
         mirror.k++; mirror.ops = 0;               // skip this chain, go on with the next
     }
     mirrorStep();
@@ -1032,6 +1074,13 @@ function chains(n) {
     for (var z = have; z < n; z++) { zones.push((z + 1) + " -> " + z); }
     update("set the Chain Select zone of the new chains by hand BEFORE playing (chain -> value): " +
            zones.join(", "));
+}
+
+// refill: load the preset instruments / racks of chain 1 again in every other chain (after saving
+// a changed preset under the same name, e.g. new samples on the pads), then update
+function refill() {
+    refillNext = true;
+    update();
 }
 
 // rest: the current knob positions in chain 1 / on the track become the resting values

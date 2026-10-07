@@ -9,6 +9,7 @@
 | `neutral` | puts every mapped parameter in every chain back to its resting value | before `rest`, before saving the template |
 | `rest` | the knob positions in chain 1 become the new resting values (applied to all chains at once) | after `neutral` and turning knobs |
 | `chains N` | adds chains up to N and fills them with the mirror | more chains; set their zones by hand afterwards |
+| `refill` | like `update`, and loads the preset instruments / racks again in all other chains | after saving a changed preset under the same name |
 | `browse` (toggle) | every note plays in chain 1 | auditioning presets in chain 1; click `update` afterwards |
 | `channel` (number) | track number = MIDI channel = first argument of `toMidi` | once per track |
 
@@ -49,11 +50,18 @@ Main parameters such as Dry/Wet, Amount, Threshold stay at 0 (effect off); `rest
 Settings that are not mapped to Tidal (filter type, saturation curve, the instrument): change them
 in chain 1 and click `update`.
 
-## Sounds from presets
+## Instruments and racks from presets
 
-`browse` on → hot-swap presets in chain 1 (all notes play there) → `browse` off → `update`.
-Only parameters are copied to the other chains: Drum Rack pads, samples, Wavetable tables and the
-hidden state of plug-ins are not.
+Load an instrument (or a Drum / Instrument / Audio Effect Rack) from a preset in chain 1 and click `update`.
+Live names a device after its preset (e.g. `909 Core Kit`), and the mirror uses that: such a device is
+**loaded from Live's browser in every chain**, so pads, samples, inner racks and plug-in state come along.
+A device that keeps its own name (plain `Drift`) is copied parameter by parameter as before.
+
+- Changed the instrument yourself (new samples on the pads, edited inner devices)? Save it from chain 1
+  as a preset in the User Library (save button on the device's title bar) under the name it has, then
+  click `refill`: it loads the preset again in all other chains.
+- The console says `not in the browser`: the name in chain 1 doesn't match a preset - save it as above.
+- Auditioning presets: `browse` on → hot-swap presets in chain 1 (all notes play there) → `browse` off → `update`.
 
 ## More chains
 
