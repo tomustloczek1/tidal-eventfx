@@ -28,6 +28,7 @@ import json
 import os
 import socket
 import struct
+import time
 
 import Live
 from _Framework.ControlSurface import ControlSurface
@@ -263,7 +264,9 @@ class EventFXHelper(ControlSurface):
         devices = list(container.devices)
         if not 0 <= job["at"] < len(devices):
             raise LoadError("device %d not there (%d devices)" % (job["at"], len(devices)))
+        t0 = time.time()
         item = self._find(job["name"], job["scope"], job["cls"])
+        job["search_ms"] = int((time.time() - t0) * 1000)
         if item is None:
             raise LoadError("'%s' not in the browser" % job["name"])
 
@@ -283,7 +286,7 @@ class EventFXHelper(ControlSurface):
         else:
             track.view.device_insert_mode = Live.Track.DeviceInsertMode.selected_right   # not at the track's end
         job.update(track_obj=track, container=container, before=len(devices),
-                   track_before=len(track.devices), ticks=0)
+                   track_before=len(track.devices), ticks=0, t_load=time.time())
         app.browser.load_item(item)
 
     def _finish(self, ok, index, message):
@@ -298,7 +301,9 @@ class EventFXHelper(ControlSurface):
                 Live.Application.get_application().browser.hotswap_target = None
             except Exception:
                 pass
-        self._reply("/loaded", job["id"], 1 if ok else 0, index, message)
+        load_ms = int((time.time() - job.get("t_load", time.time())) * 1000)
+        self._reply("/loaded", job["id"], 1 if ok else 0, index,
+                    "%s (search %d ms, load %d ms)" % (message, job.get("search_ms", 0), load_ms))
 
     def _class_ok(self, job, dev):
         return not job["cls"] or dev.class_name == job["cls"]
@@ -310,7 +315,11 @@ class EventFXHelper(ControlSurface):
             devs = list(job["container"].devices)
             if job["swap"]:
                 at = job["at"]
-                if len(devs) == job["before"] and devs[at]._live_ptr != job["old_ptr"]:
+                # done when the device at <at> is the preset: Live may keep the same device object
+                # and only load the preset into it, so check the name (the preset's) as well
+                renamed = at < len(devs) and devs[at].name.lower() == job["name"].lower()
+                replaced = at < len(devs) and devs[at]._live_ptr != job["old_ptr"]
+                if len(devs) == job["before"] and (renamed or replaced):
                     if self._class_ok(job, devs[at]):
                         self._finish(True, at, devs[at].name)
                     else:
