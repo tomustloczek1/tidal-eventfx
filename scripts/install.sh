@@ -8,8 +8,9 @@
 # The files live in the repo; the usual locations become symbolic links to them, so
 # Live / Tidal / SuperCollider keep using their normal paths and every change lands in the repo.
 #   - a location that exists but is not a link yet is MOVED into the repo first (adopt)
-#   - if both exist (fresh clone on a machine with its own files), the newer file is kept in the
-#     repo and the other one is backed up as <name>.backup-<date>; folders on the Mac are backed up
+#   - a real FILE where a link should be (a program saved over the link) is your latest save: it goes
+#     into the repo, the old repo copy is kept as <name>.backup-<date> (and stays in git history);
+#     a real FOLDER there is backed up as <name>.backup-<date> and linked to the repo
 # Templates and rack presets are COPIED into Live's User Library (Live re-saves them in place);
 # after saving them again in Live, run scripts/collect.sh to bring them back into the repo.
 set -u
@@ -33,7 +34,6 @@ LINKS=(
 problems=0
 say()   { printf '%-8s %s\n' "$1" "$2"; }
 run()   { if [ "$MODE" = "--apply" ]; then "$@"; fi; }
-mtime() { stat -f %m "$1" 2>/dev/null || echo 0; }
 
 for entry in "${LINKS[@]}"; do
   loc="${entry%%|*}"
@@ -62,11 +62,17 @@ for entry in "${LINKS[@]}"; do
     say "ADOPT" "$short -> moved into repo/$rel, then linked"
     run mkdir -p "$(dirname "$src")"; run mv "$loc" "$src"; run ln -s "$src" "$loc"
   elif [ -e "$loc" ] && [ -e "$src" ]; then
-    if [ ! -d "$loc" ] && [ "$(mtime "$loc")" -gt "$(mtime "$src")" ]; then
-      say "NEWER" "$short is newer: repo copy -> $rel.backup-$STAMP, $short moved in, linked"
+    if [ -f "$loc" ] && cmp -s "$loc" "$src"; then
+      say "RELINK" "$short is identical to repo/$rel - replaced by the link"
+      run rm "$loc"; run ln -s "$src" "$loc"
+    elif [ -f "$loc" ]; then
+      # a real file where the link should be: a program (Max, Live, an editor) saved over the link,
+      # so this is the version you just worked on -> it goes into the repo; the repo's previous
+      # version stays in git history and as a .backup file
+      say "KEEP" "$short (your latest save) -> repo/$rel; old repo copy -> $rel.backup-$STAMP"
       run mv "$src" "$src.backup-$STAMP"; run mv "$loc" "$src"; run ln -s "$src" "$loc"
     else
-      say "BACKUP" "$short -> $short.backup-$STAMP, linked to repo/$rel"
+      say "BACKUP" "folder $short -> $short.backup-$STAMP, linked to repo/$rel (merge by hand if needed)"
       run mv "$loc" "$loc.backup-$STAMP"; run ln -s "$src" "$loc"
     fi
   elif [ -e "$src" ]; then
