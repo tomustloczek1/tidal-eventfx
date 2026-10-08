@@ -520,6 +520,16 @@
       "device": "Roar",
       "param": "Tone Freq",
       "occurrence": 0
+    },
+    "corpusTune": {
+      "device": "Corpus",
+      "param": "Tune",
+      "occurrence": 0
+    },
+    "corpusGain": {
+      "device": "Corpus",
+      "param": "Gain",
+      "occurrence": 0
     }
   },
   "tracks": {
@@ -661,13 +671,13 @@
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0,
           "device": "Drum Buss",
           "param": "Dry/Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791420508476
         },
         "drumBussDrive": {
           "cc": 11,
@@ -677,13 +687,13 @@
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0.2381,
           "device": "Drum Buss",
           "param": "Drive",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791420508476
         },
         "drumBussTransients": {
           "cc": 12,
@@ -693,13 +703,13 @@
           "min": -1,
           "max": 1,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0,
           "device": "Drum Buss",
           "param": "Transients",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791420508476
         },
         "drumBussBoomAmt": {
           "cc": 13,
@@ -709,13 +719,13 @@
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0,
           "device": "Drum Buss",
           "param": "Boom Amt",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791420508476
         },
         "hpfA": {
           "cc": 15,
@@ -731,7 +741,7 @@
           "param": "Frequency",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "hpfResonance": {
           "cc": 16,
@@ -747,7 +757,7 @@
           "param": "Resonance",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "hpfFilterMorph": {
           "cc": 17,
@@ -763,7 +773,7 @@
           "param": "Filter Morph",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "hpfDrive": {
           "cc": 18,
@@ -779,7 +789,7 @@
           "param": "Drive",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "saturator": {
           "cc": 22,
@@ -789,13 +799,13 @@
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": true,
+          "inPalette": false,
           "rest": 0,
           "device": "Saturator",
           "param": "Dry/Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791395527328
         },
         "saturatorDrive": {
           "cc": 19,
@@ -805,13 +815,13 @@
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": true,
+          "inPalette": false,
           "rest": 0.5952,
           "device": "Saturator",
           "param": "Drive",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791395527328
         },
         "saturatorColorFreq": {
           "cc": 20,
@@ -821,13 +831,13 @@
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": true,
+          "inPalette": false,
           "rest": 0.5458,
           "device": "Saturator",
           "param": "Color Freq",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791395527328
         },
         "saturatorOutput": {
           "cc": 21,
@@ -837,13 +847,13 @@
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": true,
+          "inPalette": false,
           "rest": 1,
           "device": "Saturator",
           "param": "Output",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791395527328
         },
         "dynamicTube": {
           "cc": 23,
@@ -976,7 +986,7 @@
         "erosion": {
           "cc": 31,
           "tier": "chain",
-          "order": 7,
+          "order": 4,
           "primary": true,
           "min": 0,
           "max": 1,
@@ -987,12 +997,12 @@
           "param": "Amount",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791408687418
         },
         "erosionFrequency": {
           "cc": 33,
           "tier": "chain",
-          "order": 7,
+          "order": 4,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1003,12 +1013,12 @@
           "param": "Frequency",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791408687418
         },
         "erosionFilterWidth": {
           "cc": 34,
           "tier": "chain",
-          "order": 7,
+          "order": 4,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1019,12 +1029,12 @@
           "param": "Filter Width",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791408687418
         },
         "erosionNoiseBlend": {
           "cc": 35,
           "tier": "chain",
-          "order": 7,
+          "order": 4,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1035,12 +1045,12 @@
           "param": "Noise Blend",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791408687418
         },
         "redux": {
           "cc": 40,
           "tier": "chain",
-          "order": 2,
+          "order": 4,
           "primary": true,
           "min": 0,
           "max": 1,
@@ -1051,12 +1061,12 @@
           "param": "Dry/Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "reduxSampleRate": {
           "cc": 36,
           "tier": "chain",
-          "order": 2,
+          "order": 4,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1067,12 +1077,12 @@
           "param": "Sample Rate",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "reduxJitter": {
           "cc": 37,
           "tier": "chain",
-          "order": 2,
+          "order": 4,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1083,12 +1093,12 @@
           "param": "Jitter",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "reduxBitDepth": {
           "cc": 39,
           "tier": "chain",
-          "order": 2,
+          "order": 4,
           "primary": false,
           "min": 1,
           "max": 16,
@@ -1099,7 +1109,7 @@
           "param": "Bit Depth",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "colorLimiter": {
           "cc": 42,
@@ -1168,82 +1178,82 @@
         "pitchHack": {
           "cc": 45,
           "tier": "chain",
-          "order": 10,
+          "order": 1,
           "primary": true,
           "min": 0,
           "max": 100,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0,
           "device": "Pitch Hack",
           "param": "Dry / Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791420508476
         },
         "pitchHackCoarse": {
           "cc": 46,
           "tier": "chain",
-          "order": 10,
+          "order": 1,
           "primary": false,
           "min": -36,
           "max": 36,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0,
           "device": "Pitch Hack",
           "param": "Coarse",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791420508476
         },
         "pitchHackRecycle": {
           "cc": 47,
           "tier": "chain",
-          "order": 10,
+          "order": 1,
           "primary": false,
           "min": 0,
           "max": 95,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0,
           "device": "Pitch Hack",
           "param": "Recycle",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791420508476
         },
         "pitchHackReverse": {
           "cc": 48,
           "tier": "chain",
-          "order": 10,
+          "order": 1,
           "primary": false,
           "min": 0,
           "max": 100,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0,
           "device": "Pitch Hack",
           "param": "Reverse",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791420508476
         },
         "shifter": {
           "cc": 52,
           "tier": "chain",
-          "order": 3,
+          "order": 5,
           "primary": true,
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0,
           "device": "Shifter",
           "param": "Dry/Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791393491265
+          "lastSeen": 1791420508476
         },
         "shifterPitchCoarse": {
           "cc": 49,
@@ -1280,18 +1290,18 @@
         "shifterRmCoarse": {
           "cc": 51,
           "tier": "chain",
-          "order": 3,
+          "order": 5,
           "primary": false,
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0.75,
           "device": "Shifter",
           "param": "RM Coarse",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791393491265
+          "lastSeen": 1791420508476
         },
         "resonators": {
           "cc": 56,
@@ -1360,7 +1370,7 @@
         "bpfA": {
           "cc": 57,
           "tier": "chain",
-          "order": 3,
+          "order": 6,
           "primary": true,
           "min": 0,
           "max": 1,
@@ -1371,12 +1381,12 @@
           "param": "Frequency",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "bpfResonance": {
           "cc": 58,
           "tier": "chain",
-          "order": 3,
+          "order": 6,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1387,12 +1397,12 @@
           "param": "Resonance",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "bpfDrive": {
           "cc": 59,
           "tier": "chain",
-          "order": 3,
+          "order": 6,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1403,12 +1413,12 @@
           "param": "Drive",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "lpfA": {
           "cc": 61,
           "tier": "chain",
-          "order": 4,
+          "order": 7,
           "primary": true,
           "min": 0,
           "max": 1,
@@ -1419,12 +1429,12 @@
           "param": "Frequency",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "lpfResonance": {
           "cc": 62,
           "tier": "chain",
-          "order": 4,
+          "order": 7,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1435,12 +1445,12 @@
           "param": "Resonance",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "lpfFilterMorph": {
           "cc": 63,
           "tier": "chain",
-          "order": 4,
+          "order": 7,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1451,12 +1461,12 @@
           "param": "Filter Morph",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "lpfDrive": {
           "cc": 65,
           "tier": "chain",
-          "order": 4,
+          "order": 7,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1467,12 +1477,12 @@
           "param": "Drive",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "utility": {
           "cc": 69,
           "tier": "chain",
-          "order": 5,
+          "order": 8,
           "primary": true,
           "min": -1,
           "max": 1,
@@ -1483,12 +1493,12 @@
           "param": "Output",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "utilityStereoWidth": {
           "cc": 66,
           "tier": "chain",
-          "order": 5,
+          "order": 8,
           "primary": false,
           "min": 0,
           "max": 2,
@@ -1499,12 +1509,12 @@
           "param": "Stereo Width",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "utilityBassFreq": {
           "cc": 67,
           "tier": "chain",
-          "order": 5,
+          "order": 8,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1515,12 +1525,12 @@
           "param": "Bass Freq",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "utilityBalance": {
           "cc": 68,
           "tier": "chain",
-          "order": 5,
+          "order": 8,
           "primary": false,
           "min": -1,
           "max": 1,
@@ -1531,39 +1541,39 @@
           "param": "Balance",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "roar": {
           "cc": 71,
           "tier": "chain",
-          "order": 1,
+          "order": 3,
           "primary": true,
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0,
           "device": "Roar",
           "param": "Dry/Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791393491265
+          "lastSeen": 1791420508476
         },
         "roarDrive": {
           "cc": 70,
           "tier": "chain",
-          "order": 1,
+          "order": 3,
           "primary": false,
           "min": 0,
           "max": 1,
           "quantized": false,
-          "inPalette": false,
+          "inPalette": true,
           "rest": 0.5,
           "device": "Roar",
           "param": "Drive",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791393491265
+          "lastSeen": 1791420508476
         },
         "vinylDistortion": {
           "cc": 72,
@@ -1599,8 +1609,8 @@
         },
         "corpus": {
           "cc": 75,
-          "tier": "track",
-          "order": 18,
+          "tier": "chain",
+          "order": 5,
           "primary": true,
           "min": 0,
           "max": 1,
@@ -1611,12 +1621,12 @@
           "param": "Dry Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791408687418
         },
         "corpusTranspose": {
           "cc": 74,
-          "tier": "track",
-          "order": 18,
+          "tier": "chain",
+          "order": 5,
           "primary": false,
           "min": -48,
           "max": 48,
@@ -1627,7 +1637,7 @@
           "param": "Transpose",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791234598439
+          "lastSeen": 1791408687418
         },
         "spectralResonator": {
           "cc": 77,
@@ -1856,7 +1866,7 @@
         "echoA": {
           "cc": 91,
           "tier": "track",
-          "order": 6,
+          "order": 9,
           "primary": true,
           "min": 0,
           "max": 1,
@@ -1867,12 +1877,12 @@
           "param": "Dry Wet",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "echoFeedback": {
           "cc": 90,
           "tier": "track",
-          "order": 6,
+          "order": 9,
           "primary": false,
           "min": 0,
           "max": 1,
@@ -1883,7 +1893,7 @@
           "param": "Feedback",
           "occurrence": 0,
           "alwaysOn": false,
-          "lastSeen": 1791394514610
+          "lastSeen": 1791420508476
         },
         "spectralTime": {
           "cc": 93,
@@ -2132,14 +2142,14 @@
           "param": "Mod Fine",
           "occurrence": 0,
           "tier": "chain",
-          "order": 3,
+          "order": 5,
           "primary": false,
           "min": 0,
           "max": 1,
           "quantized": false,
           "alwaysOn": false,
-          "inPalette": false,
-          "lastSeen": 1791393491265
+          "inPalette": true,
+          "lastSeen": 1791420508476
         },
         "shifterDelayFeedback": {
           "cc": 112,
@@ -2148,14 +2158,14 @@
           "param": "Delay Feedback",
           "occurrence": 0,
           "tier": "chain",
-          "order": 3,
+          "order": 5,
           "primary": false,
           "min": 0,
           "max": 1,
           "quantized": false,
           "alwaysOn": false,
-          "inPalette": false,
-          "lastSeen": 1791393491265
+          "inPalette": true,
+          "lastSeen": 1791420508476
         },
         "roarToneAmt": {
           "cc": 113,
@@ -2164,14 +2174,14 @@
           "param": "Tone Amt",
           "occurrence": 0,
           "tier": "chain",
-          "order": 1,
+          "order": 3,
           "primary": false,
           "min": 0,
           "max": 1,
           "quantized": false,
           "alwaysOn": false,
-          "inPalette": false,
-          "lastSeen": 1791393491265
+          "inPalette": true,
+          "lastSeen": 1791420508476
         },
         "roarToneFreq": {
           "cc": 114,
@@ -2180,14 +2190,46 @@
           "param": "Tone Freq",
           "occurrence": 0,
           "tier": "chain",
-          "order": 1,
+          "order": 3,
+          "primary": false,
+          "min": 0,
+          "max": 1,
+          "quantized": false,
+          "alwaysOn": false,
+          "inPalette": true,
+          "lastSeen": 1791420508476
+        },
+        "corpusTune": {
+          "cc": 115,
+          "rest": 0.5,
+          "device": "Corpus",
+          "param": "Tune",
+          "occurrence": 0,
+          "tier": "chain",
+          "order": 5,
           "primary": false,
           "min": 0,
           "max": 1,
           "quantized": false,
           "alwaysOn": false,
           "inPalette": false,
-          "lastSeen": 1791393491265
+          "lastSeen": 1791408687418
+        },
+        "corpusGain": {
+          "cc": 116,
+          "rest": 0.5,
+          "device": "Corpus",
+          "param": "Gain",
+          "occurrence": 0,
+          "tier": "chain",
+          "order": 5,
+          "primary": false,
+          "min": 0,
+          "max": 1,
+          "quantized": false,
+          "alwaysOn": false,
+          "inPalette": false,
+          "lastSeen": 1791408687418
         }
       },
       "on": [
@@ -2199,7 +2241,7 @@
           "device": "BPF",
           "param": "Dry/Wet",
           "occurrence": 0,
-          "order": 3,
+          "order": 6,
           "min": 0,
           "max": 1,
           "alwaysOn": false

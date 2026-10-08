@@ -1,4 +1,5 @@
 :set -package containers
+:set -package hosc
 :set -fno-warn-orphans -Wno-type-defaults -XMultiParamTypeClasses -XOverloadedStrings
 :set prompt ""
 

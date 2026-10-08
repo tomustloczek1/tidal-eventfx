@@ -107,3 +107,23 @@ toMidiWith ccMap onMap ch p0 = stack
         ccTrack = Map.findWithDefault Map.empty chan ccMap
         onTrack = Map.findWithDefault Map.empty chan onMap
 :}
+
+---- recording into Live (EventFXHelper) -------------------------------------------
+-- record 1 4  -> track on MIDI channel 1 records 4 cycles, starting at the next bar
+-- record 1 0  -> records until recstop 1
+-- needs Link on in Live (Tidal cycles = Live bars) and launch quantization 1 Bar
+
+import qualified Sound.Osc.Fd as O
+import qualified Sound.Osc.Transport.Fd.Udp as U
+
+:{
+helperSend :: String -> [O.Datum] -> IO ()
+helperSend addr args =
+  O.withTransport (U.openUdp "127.0.0.1" 11010) (\t -> O.sendMessage t (O.message addr args))
+
+record :: Int -> Int -> IO ()
+record ch cycles = helperSend "/record" [O.int32 ch, O.int32 cycles]
+
+recstop :: Int -> IO ()
+recstop ch = helperSend "/recstop" [O.int32 ch]
+:}

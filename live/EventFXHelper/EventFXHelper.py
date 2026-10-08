@@ -18,6 +18,11 @@
 #   /swap <id> <track> <chain> <index> <name> [class] [scope]
 #                                           -> /loaded <id> <1|0> <index> <message>
 #       replaces device <index> with the browser item (hot-swap, as in Live's browser)
+#   /record <channel> <cycles>              -> /status "recording ..."
+#       arms the track whose MIDI input is that channel (or named like it), starts the transport if
+#       needed and fires its first empty clip slot: Live starts recording at the next bar (global
+#       launch quantization), no count-in; cycles > 0 stops after that many bars (4 beats each)
+#   /recstop <channel>                      -> stops that track's recording at the next bar
 # scope: "device" (default: Audio Effects, Max for Live, Plug-ins, Instruments, User Library)
 #        "preset" (User Library, Sounds, Drums, Instruments - where instrument/rack presets live)
 # class: expected class_name of the loaded device; another class is undone and reported
@@ -33,7 +38,7 @@ import time
 import Live
 from _Framework.ControlSurface import ControlSurface
 
-VERSION = 2
+VERSION = 3
 LISTEN = ("127.0.0.1", 11010)
 REPLY = ("127.0.0.1", 11011)
 SEARCH_DEPTH = 6            # browser levels searched below each root
@@ -115,6 +120,7 @@ class EventFXHelper(ControlSurface):
         self._queue = []        # pending /load jobs
         self._job = None        # load in progress
         self._saved_track = None
+        self._recs = []         # recordings to stop by hand (when ClipSlot.fire has no record_length)
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(LISTEN)
@@ -167,8 +173,79 @@ class EventFXHelper(ControlSurface):
                                 "at": int(at), "name": name, "swap": address == "/swap",
                                 "cls": args[5] if len(args) > 5 else "",
                                 "scope": args[6] if len(args) > 6 else ("preset" if address == "/swap" else "device")})
+        elif address == "/record":
+            self._record(int(args[0]), int(args[1]) if len(args) > 1 else 0)
+        elif address == "/recstop":
+            self._recstop(int(args[0]))
         else:
             self._reply("/error", "unknown command " + address)
+
+    # ---- recording --------------------------------------------------------------------
+    def _track_for_channel(self, ch):
+        tracks = list(self.song().tracks)
+        for t in tracks:
+            try:
+                if t.has_midi_input and t.input_routing_channel.display_name.strip() == "Ch. %d" % ch:
+                    return t
+            except Exception:
+                pass
+        return next((t for t in tracks if t.name.strip() == str(ch)), None)
+
+    def _record(self, ch, cycles):
+        song = self.song()
+        track = self._track_for_channel(ch)
+        if track is None:
+            return self._reply("/error", "record: no track takes MIDI channel %d" % ch)
+        slots = list(track.clip_slots)
+        index = next((i for i, slot in enumerate(slots) if not slot.has_clip), None)
+        if index is None:
+            return self._reply("/error", "record: no empty clip slot on track '%s'" % track.name)
+        slot = slots[index]
+        if track.can_be_armed and not track.arm:
+            track.arm = True
+        if song.record_mode:
+            song.record_mode = False        # Arrangement Record on would also write into the arrangement
+        if not song.is_playing:
+            song.start_playing()
+        beats = cycles * 4.0
+        manual = False
+        if cycles > 0:
+            try:
+                slot.fire(record_length=beats)
+            except Exception:
+                slot.fire()
+                manual = True
+        else:
+            slot.fire()
+        if manual:
+            self._recs.append({"slot": slot, "beats": beats, "start": None})
+        self._reply("/status", "recording track '%s' slot %d from the next bar%s" % (
+            track.name, index + 1, (" for %d cycles" % cycles) if cycles > 0 else " - stop with recstop"))
+
+    def _recstop(self, ch):
+        track = self._track_for_channel(ch)
+        if track is None:
+            return self._reply("/error", "recstop: no track takes MIDI channel %d" % ch)
+        for slot in track.clip_slots:
+            if slot.is_recording:
+                slot.fire()                 # ends the recording at the next bar, the clip plays on
+                self._recs = [r for r in self._recs if r["slot"] is not slot]
+                return self._reply("/status", "recording on track '%s' ends at the next bar" % track.name)
+        self._reply("/error", "recstop: track '%s' is not recording" % track.name)
+
+    def _tick_recordings(self):
+        now = self.song().current_song_time
+        for r in list(self._recs):
+            slot = r["slot"]
+            if r["start"] is None:
+                if slot.is_recording:
+                    r["start"] = now
+                continue
+            if not slot.is_recording:
+                self._recs.remove(r)
+            elif now >= r["start"] + r["beats"] - 1.0:    # stop is quantized to the next bar
+                slot.fire()
+                self._recs.remove(r)
 
     # ---- browser ----------------------------------------------------------------------
     def _load_paths(self):
@@ -309,6 +386,8 @@ class EventFXHelper(ControlSurface):
         return not job["cls"] or dev.class_name == job["cls"]
 
     def _tick(self):
+        if self._recs:
+            self._tick_recordings()
         if self._job is not None:
             job = self._job
             job["ticks"] += 1
