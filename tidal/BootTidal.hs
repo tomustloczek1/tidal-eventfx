@@ -17,6 +17,7 @@ enableLink
 
 :script ~/.config/tidal/toolz.tidal
 :script ~/.config/tidal/toolz-fx.tidal
+:script ~/.config/tidal/toolz-rec.tidal
 
 :set prompt "tidal> "
 :set prompt-cont ""

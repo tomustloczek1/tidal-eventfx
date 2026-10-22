@@ -7,3 +7,4 @@ __pycache__/
 *.pyc
 # Live analysis files
 *.asd
+tidal/midishift.txt

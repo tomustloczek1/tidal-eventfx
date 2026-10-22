@@ -46,6 +46,10 @@
   },
   "_preferByDevice": "params picked first after the main one, in this order",
   "preferByDevice": {
+    
+    "Reverb": [
+      "Decay Time", "Predelay", "Input Freq"
+    ],
     "Re-Enveloper": [
       "C/E Fact"
     ],
@@ -113,7 +117,7 @@
       "Recycle"
     ], 
     "Shifter": [
-      "RM Coarse", "Mod Fine", "Delay Feedback"
+      "Pitch Coarse", "Pitch Fine", "Delay Feedback"
     ],
     "Resonators": [
       "Frequency",

@@ -23,6 +23,9 @@
 #       needed and fires its first empty clip slot: Live starts recording at the next bar (global
 #       launch quantization), no count-in; cycles > 0 stops after that many bars (4 beats each)
 #   /recstop <channel>                      -> stops that track's recording at the next bar
+#   /inchan <id> <track> <channel>          -> /status: sets the track's MIDI input channel ("Ch. N")
+#   /reccal <channel>                       -> /status + /reccal <ok> <ms> to Tidal (port 11012): records 2 bars on that track, how late
+#                                              the first note lands after the bar line, deletes the clip
 # scope: "device" (default: Audio Effects, Max for Live, Plug-ins, Instruments, User Library)
 #        "preset" (User Library, Sounds, Drums, Instruments - where instrument/rack presets live)
 # class: expected class_name of the loaded device; another class is undone and reported
@@ -38,9 +41,10 @@ import time
 import Live
 from _Framework.ControlSurface import ControlSurface
 
-VERSION = 3
+VERSION = 9
 LISTEN = ("127.0.0.1", 11010)
 REPLY = ("127.0.0.1", 11011)
+TIDAL = ("127.0.0.1", 11012)  # reccal result for Tidal: /reccal <ok 0|1> <ms late (float)>
 SEARCH_DEPTH = 6            # browser levels searched below each root
 # where to look, in this order (each root is searched completely before the next one)
 DEVICE_ROOTS = ("max_for_live", "plugins", "user_library", "audio_effects", "instruments")
@@ -121,6 +125,7 @@ class EventFXHelper(ControlSurface):
         self._job = None        # load in progress
         self._saved_track = None
         self._recs = []         # recordings to stop by hand (when ClipSlot.fire has no record_length)
+        self._cals = []         # /reccal recordings waiting to be measured
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(LISTEN)
@@ -177,6 +182,10 @@ class EventFXHelper(ControlSurface):
             self._record(int(args[0]), int(args[1]) if len(args) > 1 else 0)
         elif address == "/recstop":
             self._recstop(int(args[0]))
+        elif address == "/reccal":
+            self._reccal(int(args[0]))
+        elif address == "/inchan":
+            self._inchan(int(args[1]), int(args[2]))
         else:
             self._reply("/error", "unknown command " + address)
 
@@ -192,6 +201,8 @@ class EventFXHelper(ControlSurface):
         return next((t for t in tracks if t.name.strip() == str(ch)), None)
 
     def _record(self, ch, cycles):
+        if self._link_off("record"):
+            return
         song = self.song()
         track = self._track_for_channel(ch)
         if track is None:
@@ -232,6 +243,120 @@ class EventFXHelper(ControlSurface):
                 self._recs = [r for r in self._recs if r["slot"] is not slot]
                 return self._reply("/status", "recording on track '%s' ends at the next bar" % track.name)
         self._reply("/error", "recstop: track '%s' is not recording" % track.name)
+
+    # without Link, Live and Tidal run on separate clocks and the phase drifts (~12 ms/s seen):
+    # recordings land anywhere. Turn it on and refuse this time (the phase needs a moment to lock).
+    def _link_off(self, what):
+        song = self.song()
+        try:
+            if song.is_ableton_link_enabled:
+                return False
+            song.is_ableton_link_enabled = True
+        except Exception:
+            return False                    # this Live version can't tell - go ahead
+        self._reply("/error", "%s: Link was off in Live - turned it on, run %s again in a few seconds" % (what, what))
+        return True
+
+    # ---- recording offset: one bar with one note per cycle (reccal in Tidal) -------------
+    def _reccal(self, ch):
+        if self._cals:                      # not to Tidal: its waiting reccal would take this as its result
+            return self._reply("/error", "reccal: a calibration is still running - wait for its result")
+        if self._link_off("reccal"):
+            return self._to_tidal(0, 0.0)
+        track = self._track_for_channel(ch)
+        if track is None:
+            return self._cal_fail("reccal: no track takes MIDI channel %d" % ch)
+        slots = list(track.clip_slots)
+        index = next((i for i, slot in enumerate(slots) if not slot.has_clip), None)
+        if index is None:
+            return self._cal_fail("reccal: no empty clip slot on track '%s'" % track.name)
+        slot = slots[index]
+        if track.can_be_armed and not track.arm:
+            track.arm = True
+        song = self.song()
+        if song.record_mode:
+            song.record_mode = False
+        if not song.is_playing:
+            song.start_playing()
+        try:
+            bar_ok = song.clip_trigger_quantization == Live.Song.Quantization.q_bar
+        except Exception:
+            bar_ok = True                   # can't tell - measure anyway
+        if not bar_ok:
+            return self._cal_fail("reccal: set Launch Quantization (top bar) to 1 Bar first")
+        try:
+            slot.fire(record_length=8.0)
+        except Exception:
+            return self._cal_fail("reccal: this Live version can't record a fixed length")
+        self._cals.append({"slot": slot, "seen": False, "ticks": 0, "track": track.name})
+        self._reply("/status", "reccal: recording 2 bars on track '%s'..." % track.name)
+
+    def _to_tidal(self, ok, ms):
+        try:
+            self._sock.sendto(osc_encode("/reccal", int(ok), float(ms)), TIDAL)
+        except Exception as e:
+            self.log_message("EventFXHelper: reccal result to Tidal failed: %s" % e)
+
+    def _cal_fail(self, message):
+        self._reply("/error", message)
+        self._to_tidal(0, 0.0)
+
+    # start times of the notes with this pitch (reccal plays MIDI note 0, which nothing else uses)
+    def _note_starts(self, clip, pitch):
+        try:
+            notes = [(n.pitch, n.start_time) for n in clip.get_notes_extended(0, 128, 0.0, clip.length)]
+        except Exception:
+            notes = [(n[0], n[1]) for n in clip.get_notes(0.0, 0, clip.length, 128)]
+        # a note already held when the recording starts is written at 0.0 - not a real onset
+        return sorted(t for p, t in notes if p == pitch and t > 1e-4), len(notes)
+
+    def _tick_cals(self):
+        for c in list(self._cals):
+            slot = c["slot"]
+            c["ticks"] += 1
+            if slot.is_recording:
+                c["seen"] = True
+                continue
+            if not c["seen"]:
+                if c["ticks"] > 200:                 # ~20 s and it never started
+                    self._cals.remove(c)
+                    self._cal_fail("reccal: the recording did not start")
+                continue
+            self._cals.remove(c)
+            if not slot.has_clip:
+                return self._cal_fail("reccal: no clip was recorded")
+            starts, total = self._note_starts(slot.clip, 0)
+            tempo = self.song().tempo
+            slot.delete_clip()
+            if not starts:
+                return self._cal_fail("reccal: no calibration notes (MIDI note 0) arrived (%d other notes) - "
+                                   "reload toolz-rec.tidal, is Tidal playing on this channel?" % total)
+            # Tidal plays n "0*2": notes belong on every half bar (2 beats); signed offset to the nearest one
+            offs = sorted((t - round(t / 2.0) * 2.0) * 60000.0 / tempo for t in starts)
+            ms = offs[len(offs) // 2]
+            spread = offs[-1] - offs[0]
+            if spread > 20.0:
+                return self._cal_fail("reccal: calibration notes are %.0f ms apart from each other (%s ms) - "
+                                   "timing is unstable, nothing to measure" % (spread, ", ".join("%.0f" % o for o in offs)))
+            self._to_tidal(1, ms)
+            if abs(ms) < 2.0:
+                return self._reply("/status", "reccal: notes land on the beat (%.1f ms, %d notes, spread %.1f ms) - "
+                                   "nothing to change" % (ms, len(starts), spread))
+            self._reply("/status", "reccal: notes land %.1f ms %s the beat (%d notes, spread %.1f ms, %.1f bpm) - "
+                        "Tidal corrects midiShift by %+.4f (see the Tidal window)" % (
+                            abs(ms), "after" if ms > 0 else "before", len(starts), spread, tempo, ms / 1000.0))
+
+    def _inchan(self, track_index, ch):
+        tracks = list(self.song().tracks)
+        if not 0 <= track_index < len(tracks):
+            return self._reply("/error", "inchan: no track %d" % track_index)
+        track = tracks[track_index]
+        want = "Ch. %d" % ch
+        for c in track.available_input_routing_channels:
+            if c.display_name.strip() == want:
+                track.input_routing_channel = c
+                return self._reply("/status", "track '%s' now listens to MIDI %s" % (track.name, want))
+        self._reply("/error", "inchan: track '%s' has no input channel %s (MIDI From set?)" % (track.name, want))
 
     def _tick_recordings(self):
         now = self.song().current_song_time
@@ -378,9 +503,23 @@ class EventFXHelper(ControlSurface):
                 Live.Application.get_application().browser.hotswap_target = None
             except Exception:
                 pass
+        if not ok and not job.get("retried") and ("did not replace" in message or "did not appear" in message):
+            # the browser item may be stale (preset file saved again, browser re-indexed):
+            # forget it and try once more with a fresh search, before reporting a failure
+            self._forget(job["name"], job["scope"])
+            job["retried"] = True
+            for k in ("ticks", "t_load", "track_obj", "container", "before", "track_before", "old_ptr"):
+                job.pop(k, None)
+            self._queue.insert(0, job)
+            return
         load_ms = int((time.time() - job.get("t_load", time.time())) * 1000)
         self._reply("/loaded", job["id"], 1 if ok else 0, index,
                     "%s (search %d ms, load %d ms)" % (message, job.get("search_ms", 0), load_ms))
+
+    def _forget(self, name, scope):
+        self._cache.pop((scope, name), None)
+        if self._paths.pop(scope + "|" + name, None) is not None:
+            self._save_paths()
 
     def _class_ok(self, job, dev):
         return not job["cls"] or dev.class_name == job["cls"]
@@ -388,6 +527,8 @@ class EventFXHelper(ControlSurface):
     def _tick(self):
         if self._recs:
             self._tick_recordings()
+        if self._cals:
+            self._tick_cals()
         if self._job is not None:
             job = self._job
             job["ticks"] += 1
@@ -425,7 +566,15 @@ class EventFXHelper(ControlSurface):
                 self._start(job)
                 self._job = job
             except Exception as e:
-                self._reply("/loaded", job["id"], 0, -1, str(e))
+                if not job.get("retried") and not isinstance(e, LoadError):
+                    self._forget(job["name"], job["scope"])     # stale browser item: search again
+                    job["retried"] = True
+                    self._queue.insert(0, job)
+                else:
+                    self._reply("/loaded", job["id"], 0, -1, str(e))
         elif self._saved_track is not None:
             self.song().view.selected_track = self._saved_track     # batch done: put the selection back
             self._saved_track = None
+            # browser items can go stale between batches (a preset saved again is a new file):
+            # keep only the remembered paths, which are walked and checked again next time
+            self._cache.clear()

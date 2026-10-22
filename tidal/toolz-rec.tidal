@@ -1,0 +1,65 @@
+-- toolz-rec.tidal - recording helpers that need toMidi (load AFTER toolz-fx.tidal in BootTidal)
+--
+--   recm d1 1 4 $ n "0 ~ 7 3" # redux 0.4   -- toMidi 1 added, plays at once, records 4 cycles
+--   recd d1 1 4 $ toMidi 1 $ n "0 ~ 7 3"    -- the same with toMidi written by hand
+--   recm d1 1 0 $ n "0 3"                   -- records until recstop 1
+--   reccal                                  -- measures how late notes land and corrects midiShift
+--   reccalOn 2                              -- the same on the track of channel 2 (needs a free slot)
+
+import Control.Concurrent (forkIO)
+import Control.Monad (join)
+import System.Timeout (timeout)
+import Data.IORef
+import Text.Printf (printf)
+
+:{
+-- play a pattern and record it into Live in one go: d starts at once, the recording starts at
+-- the next bar and lasts `cycles` (0 = until recstop)
+recd :: (ControlPattern -> IO ()) -> Int -> Int -> ControlPattern -> IO ()
+recd d ch cycles pat = do
+  d pat
+  record ch cycles
+
+-- the same, with toMidi added (the channel is given once)
+recm :: (ControlPattern -> IO ()) -> Int -> Int -> ControlPattern -> IO ()
+recm d ch cycles pat = recd d ch cycles (toMidi (fromIntegral ch) pat)
+
+-- number from an OSC argument
+oscNum :: O.Datum -> Maybe Double
+oscNum (O.Int32 x)  = Just (fromIntegral x)
+oscNum (O.Float x)  = Just (realToFrac x)
+oscNum (O.Double x) = Just x
+oscNum _            = Nothing
+
+-- calibration: d16 plays two short notes per cycle on channel ch (MIDI note 0, so other
+-- patterns on that channel don't disturb it), EventFXHelper records two bars, measures how
+-- many ms after the beat they landed, deletes the clip and sends the result here (UDP 11012);
+-- the new midiShift is used at once and saved in ~/.config/tidal/midishift.txt for the output
+-- in use (bt / wire, see bpm in toolz.tidal); runs in the background, the prompt stays free
+reccalOn :: Int -> IO ()
+reccalOn ch = do
+  _ <- forkIO $ do
+    d16 $ toMidi (fromIntegral ch) $ n "-60*2" # legato 0.1   -- MIDI note 0, short
+    r <- O.withTransport (U.udpServer "127.0.0.1" 11012) $ \t -> do
+      helperSend "/reccal" [O.int32 ch]
+      timeout 25000000 (O.recvMessage t)
+    d16 silence
+    case fmap O.messageDatum (join r) of
+      Just [okD, msD] | Just ok <- oscNum okD, Just ms <- oscNum msD, ok > 0 -> do
+        (b, k) <- readIORef recRef
+        old <- shiftOf k
+        let new = fromIntegral (round ((old + ms / 1000) * 10000) :: Int) / 10000 :: Double
+        setShift k new
+        bpmState k b
+        if abs ms < 2
+          then printf "reccal: on the beat (%+.1f ms) - midiShift (%s) %.4f, saved\n" ms k new :: IO ()
+          else printf "reccal: notes were %.1f ms %s - midiShift (%s) %.4f -> %.4f, saved and in use\n"
+                      (abs ms) (if ms > 0 then "late" else "early" :: String) k old new
+      Just _  -> putStrLn "reccal: no measurement - see the EventFX status in Live"
+      Nothing -> putStrLn "reccal: no answer from EventFXHelper in 25 s (helper 9 running? Link on?)"
+  return ()
+
+-- the offset is the same for every track, so channel 1 is enough
+reccal :: IO ()
+reccal = reccalOn 1
+:}

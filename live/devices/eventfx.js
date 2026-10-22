@@ -2,13 +2,18 @@
 //
 // Per-event Live effects for TidalCycles: CCs sent before each note (toMidi in Tidal) are written
 // through LiveAPI into the note's own rack chain. The palette (rack chain 1 + effects after the
-// rack) is mapped into the FX library ~/.config/tidal/fx-library.json; see NOTES.md.
+// rack) gets CC numbers per track; they are stored IN THE LIVE SET ([pattr efxstate] of this
+// device), so every set has its own CCs and a new set starts with what its template has.
+// toolz-fx.tidal is generated from the set that is open.
 //
 // Inputs (from the main patch):
-//   init / reload     - read this track's palette from the library, find the params in all chains
-//   update            - scan rack chain 1 + the effects on the track, add new params to the library
-//                       (CC per track, resting values), write fx-library.json + toolz-fx.tidal, reload
-//                       then mirrors chain 1 into all other chains (devices + values) - see below
+//   init / reload     - read this track's palette from the set, find the params in all chains,
+//                       rewrite toolz-fx.tidal from every EventFX of the open set
+//   update            - scan rack chain 1 + the effects on the track: new params get a free CC,
+//                       removed ones keep theirs (old clips) until the pool is full - then the
+//                       one unused longest gives its CC away; stores the palette in the set,
+//                       writes toolz-fx.tidal, reloads, then mirrors chain 1 into all other chains
+//   importold         - once per set made before v2: this track's CCs from fx-library.json
 //   rest              - current knob positions (chain 1 / track) become the resting values
 //   neutral           - every mapped param in every chain back to its resting value
 //   chains <n>        - add chains up to n (filled by the mirror); zones + removing chains: by hand
@@ -516,6 +521,112 @@ function trackChannel() {
     return v >= 1 && v <= 16 ? Math.floor(v) : 0;
 }
 
+// MIDI channel a track listens to ("MIDI From ... Ch. N") -> N, or 0 (All Channels / unknown).
+// Uses its own LiveAPI, so it never moves the shared one in the middle of a scan.
+function inputChannelOf(trackPath) {
+    try {
+        var t = new LiveAPI(trackPath);
+        if (!Number(t.id)) { return 0; }
+        var v = t.get("input_routing_channel");
+        var m = /Ch\.\s*(\d+)/.exec((v instanceof Array) ? v.join(" ") : String(v));
+        return m ? Number(m[1]) : 0;
+    } catch (err) { return 0; }
+}
+
+// the 'channel' box follows the track's MIDI From channel (the channel Tidal really reaches);
+// with MIDI From on All Channels the box is used as it is
+function syncChannel() {
+    var ich = inputChannelOf("this_device canonical_parent"), box = this.patcher.getnamed("channel");
+    if (!ich || !box || ich === trackChannel()) { return; }
+    post("EventFX: 'channel' box " + trackChannel() + " -> " + ich + " (MIDI From is Ch. " + ich + ")\n");
+    box.message("set", ich);
+    register();
+}
+
+// channel of a registered EventFX: its track's MIDI From if set, otherwise its box
+function channelOfEntry(e) {
+    return inputChannelOf("id " + e.track) || e.channel;
+}
+
+// ---- palette state, stored in the Live set -----------------------------------------
+// This track's palette (FX names -> CC, resting values, auto-on CCs) lives in the [pattr efxstate]
+// of this EventFX (Parameter Mode Enable, Type Blob, Stored Only), so it is saved in the .als:
+// every set has its own CCs, a duplicated track takes the palette with it, a new EventFX starts
+// empty. Stored as JSON, URI-encoded and cut into chunks (each with an "x" in front, so Max never
+// reads a chunk as a number).
+var STATE_CHUNK = 1000;
+var myState = null;         // { fx: { name: {...} }, on: [...] } or null = no palette yet
+
+function stateBox() { return this.patcher.getnamed("efxstate"); }
+
+function loadState() {
+    var box = stateBox();
+    if (!box) { return null; }
+    var v = box.getvalueof(), s = "";
+    if (!(v instanceof Array)) { v = [v]; }
+    for (var i = 0; i < v.length; i++) {
+        var c = String(v[i]);
+        if (c.charAt(0) === "x") { s += c.substr(1); }
+    }
+    if (!s) { return null; }
+    try {
+        var st = JSON.parse(decodeURIComponent(s));
+        return st && st.fx ? st : null;
+    } catch (err) {
+        post("EventFX: the palette stored in this set is broken (" + err + ") - click update\n");
+        return null;
+    }
+}
+
+function saveState(st) {
+    var box = stateBox();
+    if (!box) { return false; }
+    var s = encodeURIComponent(JSON.stringify(st)), chunks = [];
+    for (var i = 0; i < s.length; i += STATE_CHUNK) { chunks.push("x" + s.substr(i, STATE_CHUNK)); }
+    box.setvalueof(chunks.length === 1 ? chunks[0] : chunks);
+    myState = st;
+    register();
+    return true;
+}
+
+function noStateBox(what) {
+    say(what + ": add [pattr efxstate] to the EventFX patch (Parameter Mode Enable, Type Blob, " +
+        "Visibility Stored Only) - see docs/usage.md");
+}
+
+function clone(o) { return JSON.parse(JSON.stringify(o)); }
+
+// every living EventFX of the open set -> { params, tracks, names } in the old library shape
+// (params: FX name -> device/param, tracks: channel -> palette state), for writeTidal & co.
+function setLibrary() {
+    register();
+    var lib = { params: {}, tracks: {}, names: {} };
+    for (var k in REG.entries) {
+        var e = REG.entries[k];
+        if (!e.state) { continue; }
+        var ech = e.channel;
+        if (k !== instanceKey) {
+            var probe = new LiveAPI("id " + e.track);
+            if (!Number(probe.id)) { delete REG.entries[k]; continue; }
+            ech = channelOfEntry(e);
+        }
+        if (!ech) { continue; }
+        var key = String(ech);
+        if (lib.tracks[key] && k !== instanceKey) { continue; }    // a clash: this track's own state wins
+        lib.tracks[key] = e.state;
+        lib.names[key] = e.name;
+    }
+    for (var t in lib.tracks) {
+        var fx = lib.tracks[t].fx;
+        for (var n in fx) {
+            if (!lib.params[n] && fx[n].device) {
+                lib.params[n] = { device: fx[n].device, param: fx[n].param, occurrence: fx[n].occurrence || 0 };
+            }
+        }
+    }
+    return lib;
+}
+
 // ---- registry of all EventFX instances (shared by every js in Live) --------------
 // Each EventFX writes its track and channel here at load and when the 'channel' box changes;
 // update refuses when another track uses the same channel (e.g. a duplicated track).
@@ -523,10 +634,60 @@ var REG = new Global("eventfx_registry");
 if (!REG.entries) { REG.entries = {}; }
 var instanceKey = "efx" + Math.floor(Math.random() * 1e9) + "_" + now();
 
+var since = now();          // when this EventFX was created: the newer of two clashing ones renumbers
+
 function register() {
     var t = go("this_device canonical_parent");
-    REG.entries[instanceKey] = { track: Number(t.id), channel: trackChannel(), name: nameOf(t) };
+    REG.entries[instanceKey] = { track: Number(t.id), channel: trackChannel(), name: nameOf(t), since: since,
+                                 state: myState };
 }
+
+// another living EventFX on another track using channel ch -> { name, older }, or null
+function clashWith(ch) {
+    register();
+    var me = REG.entries[instanceKey];
+    for (var k in REG.entries) {
+        if (k === instanceKey) { continue; }
+        var e = REG.entries[k];
+        if (e.track === me.track) { continue; }
+        var probe = new LiveAPI("id " + e.track);
+        if (!Number(probe.id)) { delete REG.entries[k]; continue; }    // that track is gone
+        if (channelOfEntry(e) !== ch) { continue; }
+        return { name: nameOf(probe), older: e.since < me.since || (e.since === me.since && k < instanceKey) };
+    }
+    return null;
+}
+
+function freeChannel() {
+    var used = {};
+    for (var k in REG.entries) {
+        if (k === instanceKey) { continue; }
+        var probe = new LiveAPI("id " + REG.entries[k].track);
+        if (Number(probe.id)) { used[channelOfEntry(REG.entries[k])] = true; }
+    }
+    for (var c = 1; c <= 16; c++) { if (!used[c]) { return c; } }
+    return 0;
+}
+
+// a duplicated track keeps the original's channel: give the copy the first free one and set its
+// MIDI input to that channel (helper). The palette was copied with the device (it is stored in
+// it), so the copy - and the clips duplicated with it - work at once with the same CC numbers.
+function renumber(oldCh) {
+    var nc = freeChannel(), clash = clashWith(oldCh);
+    if (!nc) { say("all 16 channels are taken - set the 'channel' box by hand"); return 0; }
+    var box = this.patcher.getnamed("channel");
+    if (!box) { return 0; }
+    box.message("set", nc);
+    register();
+    outlet(1, "/inchan", 0, trackIndex(), nc);
+    var msg = "channel " + oldCh + " is used by track \"" + (clash ? clash.name : "?") + "\": this track is now " + nc +
+              (myState ? " with the same palette - in Tidal: :CheckTidal (or :script toolz-fx.tidal), then toMidi " + nc
+                       : " - click update");
+    post("EventFX: " + msg + "\n");
+    pendingNote = msg;
+    return nc;
+}
+var pendingNote = null;     // shown after the build that follows a renumber
 
 // js object deleted (device removed, set closed)
 function notifydeleted() {
@@ -541,17 +702,8 @@ function channel(n) {
 
 // another track's EventFX with this channel -> its track name, or null
 function channelClash(ch) {
-    register();
-    var me = REG.entries[instanceKey].track;
-    for (var k in REG.entries) {
-        if (k === instanceKey) { continue; }
-        var e = REG.entries[k];
-        if (e.channel !== ch || e.track === me) { continue; }
-        var probe = new LiveAPI("id " + e.track);
-        if (!Number(probe.id)) { delete REG.entries[k]; continue; }    // that track is gone
-        return nameOf(probe);
-    }
-    return null;
+    var c = clashWith(ch);
+    return c ? c.name : null;
 }
 
 // resting value of a library entry (older entries store a 0..1 position)
@@ -681,10 +833,11 @@ function writeTidal(lib) {
     for (i = 0; i < tracks.length; i++) {
         var nIn = 0, fxs = lib.tracks[tracks[i]].fx;
         for (name in fxs) { if (fxs[name].inPalette !== false) { nIn++; } }
-        counts.push("t" + tracks[i] + ": " + nIn);
+        counts.push("t" + tracks[i] + (lib.names && lib.names[tracks[i]] ? " \"" + lib.names[tracks[i]] + "\"" : "") + ": " + nIn);
     }
-    var out = ["-- toolz-fx.tidal - GENERATED by EventFX (update), do not edit",
-               "-- " + names.length + " FX params in the library; in the palettes: " + counts.join(", "),
+    var out = ["-- toolz-fx.tidal - GENERATED by EventFX from the open Live set, do not edit",
+               "-- (rewritten when a set opens and on update - reload in Tidal: :CheckTidal)",
+               "-- " + names.length + " FX params in this set; in the palettes: " + counts.join(", "),
                "-- usage: d1 $ toMidi 1 $ n \"0 3\" # redux \"0 1\" # lpfA 0.4   (1 = track / MIDI channel)",
                "-- a param that is not in the track's palette is ignored on that track", ""];
     var last = null;
@@ -965,6 +1118,7 @@ function helper() {
 // inspect <device name>: list every parameter of that device (rack chain 1 or the track) as the
 // LOM names it - for writing primaryByDevice / preferByDevice in fx-rules.json
 function inspect() {
+    if (!apiReady()) { notReady("inspect"); return; }
     var want = arrayfromargs(arguments).join(" ");
     if (!want) { say("inspect: usage 'inspect Shifter'"); return; }
     calls = 0; api = null;
@@ -997,32 +1151,35 @@ function inspect() {
 // ---- commands: update / rest / neutral ------------------------------------------
 // update: chain 1 + track effects -> library (names, CC per track, resting values) -> files -> rebuild
 function update(note) {
+    if (!apiReady()) { notReady("update"); return; }
     if (!findHome()) { noHome("update"); return; }
     if (held > 0) { say("update: notes are playing - stop first"); return; }
     if (mirror) { say("update: still mirroring - wait"); return; }
     var t0 = now();
     calls = 0; api = null;
+    syncChannel();
     var ch = trackChannel();
     if (!ch) { say("update: set the track number (1-16) in the 'channel' box first"); return; }
     var clash = channelClash(ch);
     if (clash) { say("update: track \"" + clash + "\" also uses channel " + ch + " - give this track its own number"); return; }
+    if (!stateBox()) { noStateBox("update"); return; }
     var rules = readRules();
-    var lib = readJson(LIB_FILE);
-    if (lib === undefined) { return; }
-    if (lib === null) { lib = { version: 1, params: {}, tracks: {} }; }
+    myState = loadState();
+    var lib = setLibrary();
+    lib.tracks[String(ch)] = myState ? clone(myState) : { fx: {}, on: [] };
 
     var scan = scanPalette(rules);
     if (scan.error) { say("update: " + scan.error); return; }
     var rep = mergeTrack(lib, ch, scan.entries);
     if (rep.error) { say("update: " + rep.error); return; }
 
-    if (!writeText(LIB_FILE, JSON.stringify(lib, null, 2) + "\n")) { say("update: cannot write " + LIB_FILE); return; }
-    if (!writeTidal(lib)) { say("update: cannot write " + TIDAL_FILE); return; }
+    saveState(lib.tracks[String(ch)]);
+    if (!writeTidal(setLibrary())) { say("update: cannot write " + TIDAL_FILE); return; }
 
     var n = 0;
     for (var i = 0; i < scan.entries.length; i++) { if (scan.entries[i].tidal) { n++; } }
     if (rep.added.length) { post("EventFX: new: " + rep.added.join(", ") + "\n"); }
-    if (rep.dormant.length) { post("EventFX: not in the palette any more (kept in the library): " + rep.dormant.join(", ") + "\n"); }
+    if (rep.dormant.length) { post("EventFX: not in the palette any more (CC kept for old clips until the pool is full): " + rep.dormant.join(", ") + "\n"); }
     if (rep.reclaimed.length) { post("EventFX: CC pool full, CC taken from: " + rep.reclaimed.join(", ") + "\n"); }
     if (rep.warn.length) { post("EventFX: same name, other param: " + rep.warn.join("; ") + "\n"); }
     if (scan.noPrimary.length) { post("EventFX: no main param found in: " + scan.noPrimary.join(", ") + " - add it to primaryByDevice in fx-rules.json\n"); }
@@ -1052,6 +1209,7 @@ function update(note) {
 // chains N: add chains at the end of the rack up to N, then update (the mirror fills them,
 // ChainWatch included). Removing chains and setting Chain Select zones stay manual.
 function chains(n) {
+    if (!apiReady()) { notReady("chains"); return; }
     n = Math.floor(Number(n));
     if (held > 0) { say("chains: notes are playing - stop first"); return; }
     if (mirror) { say("chains: still mirroring - wait"); return; }
@@ -1087,14 +1245,17 @@ function refill() {
 // (click [neutral] first, then turn the knobs you want to change, then [rest]);
 // main params listed in neutralPrimary (Dry/Wet, Amount...) keep their fixed resting value
 function rest() {
+    if (!apiReady()) { notReady("rest"); return; }
     if (!findHome()) { noHome("rest"); return; }
     if (held > 0) { say("rest: notes are playing - stop first"); return; }
-    var ch = trackChannel(), rules = readRules(), lib = readJson(LIB_FILE);
-    if (!ch || !lib || !lib.tracks[String(ch)]) { say("rest: no palette for this track - click update"); return; }
+    if (!stateBox()) { noStateBox("rest"); return; }
+    var ch = trackChannel(), rules = readRules();
+    myState = loadState();
+    if (!ch || !myState) { say("rest: no palette for this track - click update"); return; }
     calls = 0; api = null;
     var scan = scanPalette(rules);
     if (scan.error) { say("rest: " + scan.error); return; }
-    var tr = lib.tracks[String(ch)], changed = 0;
+    var tr = clone(myState), changed = 0;
     for (var i = 0; i < scan.entries.length; i++) {
         var e = scan.entries[i], f = e.tidal ? tr.fx[e.tidal] : null;
         if (!f) { continue; }
@@ -1103,10 +1264,38 @@ function rest() {
         f.rest = e.value;
         delete f.neutral; delete f.log;
     }
-    if (!writeText(LIB_FILE, JSON.stringify(lib, null, 2) + "\n")) { say("rest: cannot write " + LIB_FILE); return; }
+    saveState(tr);
     build();
     neutral();                                   // new resting values into every chain right away
     say("rest: " + changed + " resting values changed, all chains set");
+}
+
+// sets from before the palette lived in the set: their CCs are in ~/.config/tidal/fx-library.json
+function oldLibraryHas(ch) {
+    if (!findHome()) { return false; }
+    var lib = readJson(LIB_FILE);
+    return !!(lib && lib.tracks && lib.tracks[String(ch)]);
+}
+
+// importold: this track's palette from the old fx-library.json into this set (once per old set,
+// so clips recorded with those CCs keep working), then update
+function importold() {
+    if (!apiReady()) { notReady("importold"); return; }
+    if (!findHome()) { noHome("importold"); return; }
+    if (!stateBox()) { noStateBox("importold"); return; }
+    if (held > 0) { say("importold: notes are playing - stop first"); return; }
+    var ch = trackChannel();
+    if (!ch) { say("importold: set the track number (1-16) in the 'channel' box first"); return; }
+    var lib = readJson(LIB_FILE);
+    if (!lib || !lib.tracks || !lib.tracks[String(ch)]) { say("importold: fx-library.json has no palette for channel " + ch); return; }
+    var tr = clone(lib.tracks[String(ch)]);
+    for (var n in tr.fx) {                       // entries older than v2 kept device/param in lib.params
+        var lp = lib.params && lib.params[n];
+        if (lp && !tr.fx[n].device) { tr.fx[n].device = lp.device; tr.fx[n].param = lp.param; tr.fx[n].occurrence = lp.occurrence || 0; }
+    }
+    if (!tr.on) { tr.on = []; }
+    saveState(tr);
+    update("importold: channel " + ch + " palette taken from fx-library.json - save the set to keep it");
 }
 
 // neutral: every mapped param in every chain and on the track back to its resting value
@@ -1152,6 +1341,19 @@ function browse(on) {
                    : "browse OFF: chain rotation back on");
 }
 
+// true once Live has initialised the API for this device (live.thisdevice has fired)
+var apiOk = false;
+function apiReady() {
+    if (apiOk) { return true; }
+    var probe = new LiveAPI("this_device");
+    apiOk = Number(probe.id) > 0;
+    return apiOk;
+}
+
+function notReady(what) {
+    say(what + ": EventFX is still loading (Live API not ready) - wait a moment or click reload");
+}
+
 function build() {
     var t0 = now();
     ready = false;
@@ -1162,12 +1364,27 @@ function build() {
     cache = {};
 
     if (!findHome()) { noHome("init"); return; }
+    if (!apiReady()) { retryLater("Live API not ready"); return; }
+    syncChannel();
     var ch = trackChannel();
     if (!ch) { say("set the track number (1-16) in the 'channel' box, then click update"); return; }
-    var lib = readJson(LIB_FILE);
-    if (lib === undefined) { return; }
+    if (!stateBox()) { noStateBox("init"); return; }
+    myState = loadState();
+    var cl = clashWith(ch);
+    if (cl && cl.older) {                     // this track is the copy: renumber it
+        var nc = renumber(ch);
+        if (!nc) { return; }
+        ch = nc;
+    }
+    var lib = setLibrary();
+    writeTidal(lib);                          // toolz-fx.tidal follows the set that is open
     var entries = libraryEntries(lib, ch, readRules());
-    if (!entries) { say("no palette for track " + ch + " in the library - click update"); return; }
+    if (!entries) {
+        say(pendingNote || ("no palette in this set for track " + ch + " - click update" +
+                            (oldLibraryHas(ch) ? " (or importold: CCs from the old fx-library.json)" : "")));
+        pendingNote = null;
+        return;
+    }
     var map = { params: entries };
     for (var m = 0; m < map.params.length; m++) {
         var em = map.params[m];
@@ -1256,9 +1473,10 @@ function build() {
     for (var x in autoIds) { nAuto++; }
     for (var y in alwaysOnIds) { nOn++; }
     ready = true;
-    say(onTrack + " track params, " + inChains + " chain params x " + nChains + " chains, " +
+    say("track " + ch + ": " + onTrack + " track params, " + inChains + " chain params x " + nChains + " chains, " +
         missing.length + " skipped, " + nAuto + " auto on/off, " + nOn + " always on (" +
         calls + " LOM calls, " + (now() - t0) + " ms)");
+    if (pendingNote) { say(pendingNote); pendingNote = null; }
 }
 
 // ---- engine --------------------------------------------------------------------
