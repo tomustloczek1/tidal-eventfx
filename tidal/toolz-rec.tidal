@@ -1,8 +1,8 @@
 -- toolz-rec.tidal - recording helpers that need toMidi (load AFTER toolz-fx.tidal in BootTidal)
 --
---   recm d1 1 4 $ n "0 ~ 7 3" # redux 0.4   -- toMidi 1 added, plays at once, records 4 cycles
---   recd d1 1 4 $ toMidi 1 $ n "0 ~ 7 3"    -- the same with toMidi written by hand
---   recm d1 1 0 $ n "0 3"                   -- records until recstop 1
+--   recm 1 4 d1 $ n "0 ~ 7 3" # redux 0.4   -- toMidi 1 added, plays at once, records 4 cycles
+--   recd 1 4 d1 $ toMidi 1 $ n "0 ~ 7 3"    -- the same with toMidi written by hand
+--   recm 1 0 d1 $ n "0 3"                   -- records until recstop 1
 --   reccal                                  -- measures how late notes land and corrects midiShift
 --   reccalOn 2                              -- the same on the track of channel 2 (needs a free slot)
 
@@ -15,14 +15,15 @@ import Text.Printf (printf)
 :{
 -- play a pattern and record it into Live in one go: d starts at once, the recording starts at
 -- the next bar and lasts `cycles` (0 = until recstop)
-recd :: (ControlPattern -> IO ()) -> Int -> Int -> ControlPattern -> IO ()
-recd d ch cycles pat = do
+-- (channel, cycles, then the d-slot that plays it)
+recd :: Int -> Int -> (ControlPattern -> IO ()) -> ControlPattern -> IO ()
+recd ch cycles d pat = do
   d pat
   record ch cycles
 
 -- the same, with toMidi added (the channel is given once)
-recm :: (ControlPattern -> IO ()) -> Int -> Int -> ControlPattern -> IO ()
-recm d ch cycles pat = recd d ch cycles (toMidi (fromIntegral ch) pat)
+recm :: Int -> Int -> (ControlPattern -> IO ()) -> ControlPattern -> IO ()
+recm ch cycles d pat = recd ch cycles d (toMidi (fromIntegral ch) pat)
 
 -- number from an OSC argument
 oscNum :: O.Datum -> Maybe Double

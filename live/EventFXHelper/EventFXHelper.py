@@ -41,7 +41,7 @@ import time
 import Live
 from _Framework.ControlSurface import ControlSurface
 
-VERSION = 9
+VERSION = 10
 LISTEN = ("127.0.0.1", 11010)
 REPLY = ("127.0.0.1", 11011)
 TIDAL = ("127.0.0.1", 11012)  # reccal result for Tidal: /reccal <ok 0|1> <ms late (float)>
@@ -126,6 +126,7 @@ class EventFXHelper(ControlSurface):
         self._saved_track = None
         self._recs = []         # recordings to stop by hand (when ClipSlot.fire has no record_length)
         self._cals = []         # /reccal recordings waiting to be measured
+        self._arms = []         # tracks armed by /record: disarmed when their recording ends
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(LISTEN)
@@ -212,7 +213,8 @@ class EventFXHelper(ControlSurface):
         if index is None:
             return self._reply("/error", "record: no empty clip slot on track '%s'" % track.name)
         slot = slots[index]
-        if track.can_be_armed and not track.arm:
+        armed_here = track.can_be_armed and not track.arm
+        if armed_here:
             track.arm = True
         if song.record_mode:
             song.record_mode = False        # Arrangement Record on would also write into the arrangement
@@ -230,6 +232,8 @@ class EventFXHelper(ControlSurface):
             slot.fire()
         if manual:
             self._recs.append({"slot": slot, "beats": beats, "start": None})
+        if armed_here:
+            self._arms.append({"slot": slot, "track": track, "seen": False, "ticks": 0})
         self._reply("/status", "recording track '%s' slot %d from the next bar%s" % (
             track.name, index + 1, (" for %d cycles" % cycles) if cycles > 0 else " - stop with recstop"))
 
@@ -271,7 +275,8 @@ class EventFXHelper(ControlSurface):
         if index is None:
             return self._cal_fail("reccal: no empty clip slot on track '%s'" % track.name)
         slot = slots[index]
-        if track.can_be_armed and not track.arm:
+        armed_here = track.can_be_armed and not track.arm
+        if armed_here:
             track.arm = True
         song = self.song()
         if song.record_mode:
@@ -289,6 +294,8 @@ class EventFXHelper(ControlSurface):
         except Exception:
             return self._cal_fail("reccal: this Live version can't record a fixed length")
         self._cals.append({"slot": slot, "seen": False, "ticks": 0, "track": track.name})
+        if armed_here:
+            self._arms.append({"slot": slot, "track": track, "seen": False, "ticks": 0})
         self._reply("/status", "reccal: recording 2 bars on track '%s'..." % track.name)
 
     def _to_tidal(self, ok, ms):
@@ -524,9 +531,30 @@ class EventFXHelper(ControlSurface):
     def _class_ok(self, job, dev):
         return not job["cls"] or dev.class_name == job["cls"]
 
+    # a track armed by /record or /reccal is disarmed again once its recording is over
+    # (a track that was armed before stays armed)
+    def _tick_arms(self):
+        for a in list(self._arms):
+            a["ticks"] += 1
+            try:
+                recording = a["slot"].is_recording
+            except Exception:
+                recording = False           # slot gone (track deleted)
+            if recording:
+                a["seen"] = True
+                continue
+            if a["seen"] or a["ticks"] > 600:     # over, or never started within ~60 s
+                self._arms.remove(a)
+                try:
+                    a["track"].arm = False
+                except Exception:
+                    pass
+
     def _tick(self):
         if self._recs:
             self._tick_recordings()
+        if self._arms:
+            self._tick_arms()
         if self._cals:
             self._tick_cals()
         if self._job is not None:
