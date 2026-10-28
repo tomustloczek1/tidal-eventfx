@@ -23,6 +23,8 @@
 #       needed and fires its first empty clip slot: Live starts recording at the next bar (global
 #       launch quantization), no count-in; cycles > 0 stops after that many bars (4 beats each)
 #   /recstop <channel>                      -> stops that track's recording at the next bar
+#   /recmany <cycles> <channel> ...         -> /status: records several tracks at once, all in the
+#                                              same scene row (the first row empty on all of them)
 #   /inchan <id> <track> <channel>          -> /status: sets the track's MIDI input channel ("Ch. N")
 #   /reccal <channel>                       -> /status + /reccal <ok> <ms> to Tidal (port 11012): records 2 bars on that track, how late
 #                                              the first note lands after the bar line, deletes the clip
@@ -33,6 +35,7 @@
 # before the next one starts. Track selection and the insert mode are restored afterwards.
 
 import json
+import math
 import os
 import socket
 import struct
@@ -41,7 +44,7 @@ import time
 import Live
 from _Framework.ControlSurface import ControlSurface
 
-VERSION = 10
+VERSION = 12
 LISTEN = ("127.0.0.1", 11010)
 REPLY = ("127.0.0.1", 11011)
 TIDAL = ("127.0.0.1", 11012)  # reccal result for Tidal: /reccal <ok 0|1> <ms late (float)>
@@ -126,7 +129,8 @@ class EventFXHelper(ControlSurface):
         self._saved_track = None
         self._recs = []         # recordings to stop by hand (when ClipSlot.fire has no record_length)
         self._cals = []         # /reccal recordings waiting to be measured
-        self._arms = []         # tracks armed by /record: disarmed when their recording ends
+        self._arms = []         # tracks armed by /reccal: disarmed when its recording ends
+        self._ends = []         # /record, /recmany: stop the new clip (no auto-play) + disarm at the end
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(LISTEN)
@@ -181,6 +185,8 @@ class EventFXHelper(ControlSurface):
                                 "scope": args[6] if len(args) > 6 else ("preset" if address == "/swap" else "device")})
         elif address == "/record":
             self._record(int(args[0]), int(args[1]) if len(args) > 1 else 0)
+        elif address == "/recmany":
+            self._recmany(int(args[0]), [int(a) for a in args[1:]])
         elif address == "/recstop":
             self._recstop(int(args[0]))
         elif address == "/reccal":
@@ -202,7 +208,7 @@ class EventFXHelper(ControlSurface):
         return next((t for t in tracks if t.name.strip() == str(ch)), None)
 
     def _record(self, ch, cycles):
-        if self._link_off("record"):
+        if self._link_off("record") or not self._bar_quant_ok("record"):
             return
         song = self.song()
         track = self._track_for_channel(ch)
@@ -221,21 +227,117 @@ class EventFXHelper(ControlSurface):
         if not song.is_playing:
             song.start_playing()
         beats = cycles * 4.0
-        manual = False
         if cycles > 0:
             try:
                 slot.fire(record_length=beats)
             except Exception:
                 slot.fire()
-                manual = True
         else:
             slot.fire()
-        if manual:
-            self._recs.append({"slot": slot, "beats": beats, "start": None})
-        if armed_here:
-            self._arms.append({"slot": slot, "track": track, "seen": False, "ticks": 0})
-        self._reply("/status", "recording track '%s' slot %d from the next bar%s" % (
-            track.name, index + 1, (" for %d cycles" % cycles) if cycles > 0 else " - stop with recstop"))
+        self._watch_end(slot, track, beats)     # also ends it when fire() had no record_length
+        self._reply("/status", "recording track '%s' slot %d from the next bar%s, then the clip stops" % (
+            track.name, index + 1, (" for %d cycles" % cycles) if cycles > 0 else " until recstop"))
+
+    # several tracks at once (rec in urm.tidal): one scene row, so the parts of a song stay together
+    def _recmany(self, cycles, chans):
+        if self._link_off("rec") or not self._bar_quant_ok("rec"):
+            return
+        if not chans:
+            return self._reply("/error", "rec: no channels")
+        tracks = []
+        for ch in chans:
+            t = self._track_for_channel(ch)
+            if t is None:
+                return self._reply("/error", "rec: no track takes MIDI channel %d" % ch)
+            if t not in tracks:
+                tracks.append(t)
+        rows = min(len(list(t.clip_slots)) for t in tracks)
+        index = next((i for i in range(rows)
+                      if all(not list(t.clip_slots)[i].has_clip for t in tracks)), None)
+        if index is None:
+            return self._reply("/error", "rec: no scene row is empty on all of: %s - add a scene" %
+                               ", ".join("'%s'" % t.name for t in tracks))
+        song = self.song()
+        if song.record_mode:
+            song.record_mode = False
+        for t in tracks:
+            if t.can_be_armed and not t.arm:
+                t.arm = True
+        if not song.is_playing:
+            song.start_playing()
+        beats = cycles * 4.0
+        for t in tracks:
+            slot = list(t.clip_slots)[index]
+            if cycles > 0:
+                try:
+                    slot.fire(record_length=beats)
+                except Exception:
+                    slot.fire()             # no fixed length: _tick_ends stops it at the right bar
+            else:
+                slot.fire()
+            self._watch_end(slot, t, beats)
+        self._reply("/status", "rec: %d tracks into scene %d from the next bar%s, then the clips stop" % (
+            len(tracks), index + 1, (" for %d cycles" % cycles) if cycles > 0 else " until recstop"))
+
+    # recordings start and stop on bar lines only with Launch Quantization = 1 Bar
+    def _bar_quant_ok(self, what):
+        try:
+            if self.song().clip_trigger_quantization != Live.Song.Quantization.q_bar:
+                self._reply("/error", "%s: set Launch Quantization (top bar) to 1 Bar first" % what)
+                return False
+        except Exception:
+            pass
+        return True
+
+    # ---- end of a recording: the new clip does not start playing, the track is disarmed -----
+    def _watch_end(self, slot, track, beats):
+        self._ends.append({"slot": slot, "track": track, "beats": beats, "seen": False,
+                           "start": 0.0, "stopping": False, "ticks": 0})
+
+    def _stop_track(self, track, quantized):
+        try:
+            track.stop_all_clips(quantized)
+        except TypeError:
+            track.stop_all_clips()          # older Live: always quantized
+
+    def _tick_ends(self):
+        now = self.song().current_song_time
+        for e in list(self._ends):
+            e["ticks"] += 1
+            try:
+                recording = e["slot"].is_recording
+            except Exception:
+                self._ends.remove(e)        # slot gone (track deleted)
+                continue
+            if not e["seen"]:
+                if recording:
+                    e["seen"] = True
+                    e["start"] = math.floor(now / 4.0) * 4.0     # the bar it started on
+                elif e["ticks"] > 600:                            # never started within ~60 s
+                    self._ends.remove(e)
+                    self._disarm(e["track"])
+                continue
+            if recording:
+                # inside the last bar: a quantized stop ends the recording at its last bar line,
+                # so the clip is complete but does not start playing
+                if e["beats"] > 0 and not e["stopping"] and now >= e["start"] + e["beats"] - 2.0:
+                    self._stop_track(e["track"], True)
+                    e["stopping"] = True
+                continue
+            self._ends.remove(e)            # recording over
+            try:
+                if e["slot"].has_clip and e["slot"].clip.is_playing:
+                    self._stop_track(e["track"], False)
+            except Exception:
+                pass
+            self._disarm(e["track"])
+
+    def _disarm(self, track):
+        try:
+            if track.can_be_armed:
+                track.arm = False
+        except Exception:
+            pass
 
     def _recstop(self, ch):
         track = self._track_for_channel(ch)
@@ -243,7 +345,7 @@ class EventFXHelper(ControlSurface):
             return self._reply("/error", "recstop: no track takes MIDI channel %d" % ch)
         for slot in track.clip_slots:
             if slot.is_recording:
-                slot.fire()                 # ends the recording at the next bar, the clip plays on
+                self._stop_track(track, True)   # ends the recording at the next bar, the clip stays stopped
                 self._recs = [r for r in self._recs if r["slot"] is not slot]
                 return self._reply("/status", "recording on track '%s' ends at the next bar" % track.name)
         self._reply("/error", "recstop: track '%s' is not recording" % track.name)
@@ -555,6 +657,8 @@ class EventFXHelper(ControlSurface):
             self._tick_recordings()
         if self._arms:
             self._tick_arms()
+        if self._ends:
+            self._tick_ends()
         if self._cals:
             self._tick_cals()
         if self._job is not None:
