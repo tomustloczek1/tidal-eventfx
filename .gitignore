@@ -8,3 +8,5 @@ __pycache__/
 # Live analysis files
 *.asd
 tidal/midishift.txt
+# personal Tidal shortcuts, not shared
+tidal/f/10-own.tidal

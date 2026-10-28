@@ -1,0 +1,18 @@
+-- load-functions.tidal : loads every *.tidal file from ~/.config/tidal/f/
+--
+-- files are loaded in alphabetical order, so prefix them with numbers when one
+-- depends on another (10-urm.tidal, 20-beat-repeat.tidal, ...)
+--
+-- how it works: the shell lists the files and writes one ":script <file>" line per file
+-- into a temporary file, then ":cmd" runs those lines (needs no extra Haskell packages)
+--
+-- load order in a session:
+--   :script ~/.config/tidal/toolz.tidal
+--   :script ~/.config/tidal/toolz-fx.tidal
+--   :script ~/.config/tidal/load-functions.tidal
+--
+-- after editing a file in f/ run this script again and re-evaluate your d1..d12
+
+:! for f in ~/.config/tidal/f/*.tidal; do [ -e "$f" ] && echo ":script $f"; done > /tmp/tidal-functions.ghci
+
+:cmd readFile "/tmp/tidal-functions.ghci"

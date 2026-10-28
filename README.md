@@ -58,14 +58,18 @@ Then in Live:
 ```bash
 scripts/start.sh               # SuperCollider + SuperDirt in tmux
 ```
+`BootTidal.hs` loads `toolz.tidal`, `toolz-fx.tidal` and every file in `tidal/f/` (through
+`load-functions.tidal`, alphabetically), so after boot:
+
 ```haskell
-:script ~/.config/tidal/toolz.tidal
-:script ~/.config/tidal/toolz-fx.tidal
 bpm 140
 d1 $ toMidi 1 $ n "0 [3 ~] 7 5" # saturator "<0 0.8>" # lpfA (range 0.25 0.95 sine)
+chk $ toMidi 1 $ n "0 [3 ~"       -- dry run: type check + mini-notation parse, nothing plays
+rec 4 d1 $ toMidi 1 $ n "0 3 7"  -- record 4 cycles into Live from the next bar
 ```
 
 `toMidi <track>` sends to the Live track whose EventFX `channel` box has that number.
+`urm` builds a song form from named parts on several tracks (`tidal/f/20-urm.tidal`).
 
 ## Documentation
 
@@ -81,6 +85,7 @@ d1 $ toMidi 1 $ n "0 [3 ~] 7 5" # saturator "<0 0.8>" # lpfA (range 0.25 0.95 si
 | folder | linked to | contents |
 |---|---|---|
 | `tidal/` | `~/.config/tidal/` | BootTidal, `toolz.tidal` (toMidi, bpm), FX library, rules, generated `toolz-fx.tidal` |
+| `tidal/f/` | (inside `tidal/`) | more functions, loaded in name order by `load-functions.tidal`: `chk`, `urm`, `rec` |
 | `live/devices/` | User Library presets folders | EventFX and ChainWatch (`.amxd` + `.js`) |
 | `live/EventFXHelper/` | `User Library/Remote Scripts/EventFXHelper/` | Remote Script |
 | `live/templates/`, `live/presets/` | copied into the User Library | Live template, rack presets (`scripts/collect.sh` brings them back) |

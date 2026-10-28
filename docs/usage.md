@@ -20,7 +20,7 @@ Everything except `reload` only while nothing plays (`update` / `rest` refuse wh
 1. Open Live (template). EventFX reads the library by itself, every ChainWatch reports in the
    Max console, the helper says `ready`.
 2. `scripts/start.sh` (or `:StartSC`), wait for `==== SuperDirt ready ====`.
-3. In Tidal: `:script ~/.config/tidal/toolz.tidal`, `:script ~/.config/tidal/toolz-fx.tidal`, `bpm <tempo>`.
+3. In Tidal: `bpm <tempo>` (BootTidal has already loaded `toolz.tidal`, `toolz-fx.tidal` and `f/`).
 
 ## Changing the palette
 
@@ -80,6 +80,14 @@ Removing chains: delete them by hand, then `update`.
 Each track has its own palette and its own CC numbers (CCs are per MIDI channel).
 
 ## Recording
+
+From Tidal (`tidal/f/30-rec.tidal`, through EventFXHelper; needs Link on and Launch Quantization 1 Bar):
+
+```haskell
+rec 4 d2 $ toMidi 2 $ n "0 ~ 7 3"   -- every track the pattern plays on records 4 cycles, same scene row
+rec 0 d1 $ toMidi 1 $ n "0 3"       -- until recstop 1
+reccal                              -- measure and save the recording offset (midiShift)
+```
 
 Automation Arm OFF. A recorded clip holds the notes and the MIDI CC envelopes (the jumps to 127 are
 sentinels - they make Live record repeated values). Playing the clip without Tidal sounds the same.

@@ -1,0 +1,54 @@
+-- 20-urm.tidal : "ur" with a MIDI track number per part
+-- (loaded from f/ by load-functions.tidal, after toolz.tidal and toolz-fx.tidal: needs toMidi)
+--
+-- usage:
+--   d1 $ urm <unit> <plan> [(name, track, pattern), ...] [(fname, function), ...]
+--   rec <cycles> d1 $ urm ...            -- record it into Live (30-rec.tidal)
+--
+--   unit    how many cycles the SHORTEST step of the plan lasts
+--           (1 when the plan uses "!", 0.5 if it contains "@0.5", ...)
+--   plan    mini-notation with part names, e.g. "intro!4 <verse chorus>!8, drone!12"
+--           "!" repeats a part (1 repeat = 1 cycle), "," stacks layers, "<>" alternates per pass
+--           "name:fname" applies the function "fname" from the last list to that part
+--   parts   (name, MIDI track, RAW pattern) - patterns WITHOUT toMidi, urm adds it per track
+--   funcs   (name, function) - run BEFORE toMidi, so CC and notes stay together
+--
+-- rules:
+--   * every alternative inside <> must have the same number of steps
+--   * all layers (separated by ",") must add up to the same number of steps
+--   * the song length is computed from the first 16 passes of the plan
+--     (urmLength 1 "intro!4 verse!8" gives one pass in cycles: 12)
+--
+-- example:
+--   d1 $ urm 1 "intro!4 <verse chorus>!8, drone!12"
+--     [ ("intro",  1, kick)
+--     , ("verse",  1, hats)
+--     , ("chorus", 2, stack [kick, hats])
+--     , ("drone",  3, drone)
+--     ]
+--     [ ("thin", mask "1 0 1 0") ]
+
+:m + Data.List
+
+:{
+-- length of one pass of the plan, in cycles
+urmLength :: Time -> Pattern String -> Time
+urmLength unit planPat = case totals of
+    []     -> error "urm: empty plan"
+    (x:xs) | Prelude.all (== x) xs -> x
+           | otherwise     -> error "urm: every alternative inside <> must have the same number of steps"
+  where
+    dur e  = wholeStop e - wholeStart e
+    totals = [ unit / minimum (map dur es)
+             | c <- [0 .. 15], let es = queryArc planPat (Arc c (c + 1)), not (null es) ]
+
+-- the track numbers are plain Ints: patterns can't be compared, Ints can (nub, ==)
+urm :: Time -> Pattern String -> [(String, Int, ControlPattern)]
+    -> [(String, ControlPattern -> ControlPattern)] -> ControlPattern
+urm unit planPat parts fs = stack
+  [ toMidi (fromIntegral t) $ ur (urmLength unit planPat) planPat
+      [ (nm, stack [ p | (nm', t', p) <- parts, nm' == nm, t' == t ])
+      | nm <- nub [ nm | (nm, t', _) <- parts, t' == t ] ]
+      fs
+  | t <- nub [ t | (_, t, _) <- parts ] ]
+:}

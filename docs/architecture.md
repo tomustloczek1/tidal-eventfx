@@ -40,6 +40,7 @@ no note. Chains picked for a note are reserved for 600 ms.
 | `tidal/toolz-fx.tidal` | EventFX (`update`) | Tidal |
 | `tidal/fx-rules.json` | you | EventFX (`update`) |
 | `tidal/toolz.tidal`, `BootTidal.hs` | you | Tidal |
+| `tidal/load-functions.tidal`, `tidal/f/*.tidal` | you | Tidal (after `toolz-fx.tidal`, in name order) |
 | `live/devices/*.js`, `*.amxd` | you (Max) | Live |
 | `live/EventFXHelper/*.py` | you | Live at start |
 

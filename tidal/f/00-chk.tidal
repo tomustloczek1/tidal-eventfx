@@ -1,0 +1,20 @@
+-- 00-chk.tidal : dry run of a pattern - type check + mini-notation parse, nothing plays
+-- (loaded from f/ by load-functions.tidal)
+--
+-- usage:
+--   chk $ s "bd*2 [~ sn" # n "<0 2>"
+--   in nvim: <leader>k sends the block under the cursor with its `d1 $` / `p "x" $` /
+--   `rec 8 d1 $` replaced by `chk $`
+--
+-- how it works: GHCi type-checks the expression before running it (type errors show up
+-- as usual); then the first 16 cycles are queried, which forces every mini-notation
+-- string that produces structure, so a bad string throws "Syntax error in sequence".
+-- Limits: branches that only start after cycle 16 are not reached, `cF` controls give
+-- their default value, and random choices only check what comes up in those 16 cycles.
+
+:{
+chk :: ControlPattern -> IO ()
+chk pat = do
+  let n = length (queryArc pat (Arc 0 16))
+  n `seq` putStrLn ("ok: " ++ show n ++ " events in 16 cycles")
+:}
