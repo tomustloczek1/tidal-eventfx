@@ -95,6 +95,7 @@
     ("out channels: " ++ s.options.numOutputBusChannels).postln;
     ("orbits      : " ++ (~dirt.notNil).if({ ~dirt.orbits.size }, { "—" })).postln;
     ("synthdefs   : " ++ SynthDescLib.global.synthDescs.size).postln;
+    ("samples     : " ++ (~dirt.notNil).if({ ~dirt.soundLibrary.buffers.size ++ " banks" }, { "—" })).postln;
     ("MIDI notes  : " ++ (~mNote.notNil).if({ "ok" }, { "—" })).postln;
     if(s.sampleRate != s.options.sampleRate) {
         "!! SAMPLE RATE MISMATCH — check BlackHole in Audio MIDI Setup".postln;
@@ -106,7 +107,13 @@
 };
 
 // --- 5. Boot SuperDirt (wywoływalny ponownie) ---------------
-~bootDirt = {
+// sample: Dirt-Samples (218 banków), tidal-drum-machines i własne ładują się do RAM
+// przy każdym starcie (kilka sekund). Teraz gra się przez MIDI do Live, więc domyślnie
+// wyłączone. Na tę sesję: ~loadAllSamples.() (działa na chodzącym SuperDirt).
+// Na stałe: zmień false na true poniżej.
+~loadSamples = false;
+
+~loadAllSamples = {
     var samplesDefault, samplesCustom, drumMachines, drumNameFunc;
     samplesDefault = "~/Library/Application Support/SuperCollider/downloaded-quarks/Dirt-Samples".standardizePath;
     samplesCustom  = "~/Documents/tidal/samples".standardizePath;
@@ -114,7 +121,6 @@
     drumMachines = Quarks.all.detect({ |q| q.name == "tidal-drum-machines" });
     drumNameFunc = { |path| path.basename.replace("-", "") };
 
-    ~dirt = SuperDirt(2, s);
     ~dirt.loadSoundFiles(samplesDefault ++ "/*");
 
     if(drumMachines.notNil) {
@@ -132,6 +138,16 @@
         ("Loaded custom samples from: " ++ samplesCustom).postln;
     } {
         ("Custom sample folder not found: " ++ samplesCustom).postln;
+    };
+};
+
+~bootDirt = {
+    ~dirt = SuperDirt(2, s);
+
+    if(~loadSamples) {
+        ~loadAllSamples.();
+    } {
+        "Samples not loaded (~loadSamples = false) — MIDI and synths only".postln;
     };
 
     // orbity 0-3 na osobne pary kanałów, 4-11 (MIDI) na kanał 0
