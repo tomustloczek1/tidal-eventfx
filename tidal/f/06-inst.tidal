@@ -1,0 +1,141 @@
+-- 06-inst.tidal : choose the instrument of a track from the pattern
+-- (loaded from f/ by load-functions.tidal, right after 05-helper.tidal: it redefines d1..d16,
+--  so everything loaded later - 10-own, urm, rec - goes through the new ones)
+--
+--   d1 $ toMidi 1 $ n "0 3 7" # i "Analog Bass"
+--
+-- `i` names an instrument / preset from Live's browser (Instruments, Drums, Sounds, User Library).
+-- The name is plain text, not mini-notation: spaces and dots are part of the name.
+-- Tab in Neovim completes it from ~/.config/tidal/instruments.txt (make that list with `instlist`).
+-- When you evaluate a d-line whose instrument differs from what the track has:
+--   1. everything goes silent (hush),
+--   2. EventFXHelper loads it into rack chain 1 and EventFX refills the other chains,
+--   3. every d-slot that was playing starts again, with the new pattern.
+-- The first `i` per track in the first 4 cycles counts. Loading takes a few seconds
+-- (sample kits longer); the Tidal window shows how it went.
+--
+--   instlist    -- (re)write the list of names for Tab (after adding presets to Live)
+
+-- each file imports everything it uses, so it also loads on its own (:script)
+import qualified Sound.Osc.Fd as O
+import qualified Sound.Osc.Transport.Fd.Udp as U
+import qualified Sound.Tidal.Boot as B
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Monad (forM_)   -- not `when`: Tidal has its own
+import System.Timeout (timeout)
+import Data.IORef
+import Text.Printf (printf)
+:m + Data.List
+
+-- the d-slots of Sound.Tidal.Boot (not whatever d1 means now: reloading this file stays safe)
+dOrig = [B.d1, B.d2, B.d3, B.d4, B.d5, B.d6, B.d7, B.d8, B.d9, B.d10, B.d11, B.d12, B.d13, B.d14, B.d15, B.d16]
+
+instRef  <- newIORef (Map.empty :: Map.Map Int String)              -- channel -> instrument loaded
+slotsRef <- newIORef (Map.empty :: Map.Map Int ControlPattern)      -- d-slot -> its last pattern
+busyRef  <- newIORef False                                          -- an instrument change is running
+
+:{
+-- plain String: "Analog Bass" stays one name (as mini-notation it would be two steps)
+i :: String -> ControlPattern
+i nm = pure (Map.singleton "i" (VS nm))
+
+-- (channel, instrument) the pattern asks for: the first `i` per channel in its first 4 cycles
+instWanted :: ControlPattern -> [(Int, String)]
+instWanted pat = nubBy (\a b -> fst a == fst b)
+  [ (floor c + 1, nm)
+  | e <- sortOn wholeStart (filter (\e -> whole e /= Nothing) (queryArc pat (Arc 0 4)))
+  , Just c  <- [Map.lookup "midichan" (value e) >>= getF]
+  , Just nm <- [Map.lookup "i" (value e) >>= getS] ]
+
+-- the ones that differ from what the tracks have now
+instChanges :: ControlPattern -> IO [(Int, String)]
+instChanges pat = do
+  cur <- readIORef instRef
+  return [ (ch, nm) | (ch, nm) <- instWanted pat, Map.lookup ch cur /= Just nm ]
+
+-- what d1..d16 do: remember the pattern; a new instrument -> hush, change, resume
+dWith :: Int -> ControlPattern -> IO ()
+dWith k pat = do
+  modifyIORef slotsRef (Map.insert k pat)
+  busy <- readIORef busyRef
+  changes <- instChanges pat
+  if busy
+    then return ()                               -- starts with the others when the change is done
+  else if null changes
+    then (dOrig !! (k - 1)) pat
+    else do
+      writeIORef busyRef True
+      _ <- forkIO (instChange changes)
+      return ()
+
+-- hush, ask the helper for each new instrument, wait for the answers, then resume every slot.
+-- Quiet when the track already has that instrument (the usual case right after Tidal starts:
+-- it doesn't know yet what the tracks have); "loading..." only shows when it takes over 1 s
+instChange :: [(Int, String)] -> IO ()
+instChange changes = do
+  mapM_ ($ silence) dOrig
+  doneRef <- newIORef False
+  _ <- forkIO $ do
+    threadDelay 1000000
+    done <- readIORef doneRef
+    if done then return () else forM_ changes $ \(ch, nm) -> say (printf "i: track %d -> '%s' loading..." ch nm)
+  answers <- O.withTransport (U.udpServer "127.0.0.1" 11013) $ \t -> do
+    forM_ changes $ \(ch, nm) -> helperSend "/inst" [O.int32 ch, O.string nm]
+    let collect 0 acc = return acc
+        collect left acc = do
+          m <- timeout 100000000 (O.recvMessage t)          -- 100 s: kits with many samples
+          case m of
+            Nothing -> return acc                           -- no answer: give up waiting
+            Just Nothing -> collect left acc
+            Just (Just msg) -> case O.messageDatum msg of
+              (chD : okD : rest) | O.messageAddress msg == "/inst"
+                                 , Just ch <- oscNum chD, Just ok <- oscNum okD ->
+                collect (left - 1) ((floor ch, ok > 0, unwords (map oscText rest)) : acc)
+              _ -> collect left acc
+    collect (length changes) []
+  writeIORef doneRef True
+  forM_ changes $ \(ch, nm) ->
+    case [ (ok, txt) | (c, ok, txt) <- answers, c == ch ] of
+      ((True, txt) : _)
+        | "is already there" `isSuffixOf` txt -> modifyIORef instRef (Map.insert ch nm)
+        | otherwise -> modifyIORef instRef (Map.insert ch nm) >> say (printf "i: track %d: %s" ch txt)
+      ((False, txt) : _) -> say (printf "i: track %d: %s" ch txt)
+      []                 -> say (printf "i: track %d: no answer from EventFXHelper (helper 13 running?)" ch)
+  writeIORef busyRef False
+  slots <- readIORef slotsRef
+  forM_ (Map.toList slots) $ \(k, p) -> (dOrig !! (k - 1)) p
+
+-- the list of instrument / preset names for Tab in Neovim (~/.config/tidal/instruments.txt)
+instlist :: IO ()
+instlist = do
+  _ <- forkIO $ do
+    say "instlist: walking Live's browser (Live stays usable, takes a while)..."
+    r <- O.withTransport (U.udpServer "127.0.0.1" 11013) $ \t -> do
+      helperSend "/instlist" []
+      timeout 600000000 (O.recvMessage t)
+    case r of
+      Just (Just msg) -> say ("instlist: " ++ unwords (map oscText (drop 1 (O.messageDatum msg))))
+      _               -> say "instlist: no answer from EventFXHelper (helper 13 running?)"
+  return ()
+
+-- hush also forgets the patterns, so an instrument change never brings them back
+hush :: IO ()
+hush = writeIORef slotsRef Map.empty >> B.hush
+
+d1 = dWith 1
+d2 = dWith 2
+d3 = dWith 3
+d4 = dWith 4
+d5 = dWith 5
+d6 = dWith 6
+d7 = dWith 7
+d8 = dWith 8
+d9 = dWith 9
+d10 = dWith 10
+d11 = dWith 11
+d12 = dWith 12
+d13 = dWith 13
+d14 = dWith 14
+d15 = dWith 15
+d16 = dWith 16
+:}

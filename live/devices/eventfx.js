@@ -499,6 +499,13 @@ function scanPalette(rules) {
                 e.tidal = t;
                 var np = rules.neutralPrimary[c.par.name];
                 e.rest = (c.role === "primary" && np !== undefined) ? e.min + np * (e.max - e.min) : e.value;
+                if (c.role === "primary" && np !== undefined) {
+                    // an amount (Dry/Wet...): any other param of this device turns it up to where
+                    // the knob stands in chain 1 (all the way if it stands at rest)
+                    var pos = e.max > e.min ? (e.value - e.rest) / (e.max - e.min) + np : 1;
+                    e.engage = true;
+                    e.onValue = Math.abs(e.value - e.rest) > 0.001 * Math.max(e.max - e.min, 1e-6) ? Math.min(Math.max(pos, 0), 1) : (np < 0.5 ? 1 : 0);
+                }
                 if (c.role === "primary") { primaryName = t; }
             }
             pending.push(e);
@@ -773,7 +780,36 @@ function mergeTrack(lib, ch, entries) {
             warn.push(e.tidal + " is " + lp.device + "/" + lp.param + " elsewhere");
         }
     }
-    tr.on = on;
+    // engage: using any param of a device also sets its amount (primary Dry/Wet...) and its
+    // auto-on param, unless the pattern sets that one itself (Tidal skips explicit CCs)
+    var byDev = {}, engage = {}, d;
+    for (i = 0; i < entries.length; i++) {
+        var en = entries[i];
+        d = en.device;
+        if (!byDev[d]) { byDev[d] = []; engage[d] = []; }
+        if (en.tidal) { byDev[d].push(en); }
+        if (en.role === "primary" && en.engage && tr.fx[en.tidal]) {
+            engage[d].push({ name: en.tidal, key: en.key, cc: tr.fx[en.tidal].cc, value: en.onValue, e: en });
+        }
+    }
+    for (i = 0; i < on.length; i++) {                     // auto-on params (BPF Dry/Wet...)
+        engage[on[i].device] = engage[on[i].device] || [];
+        engage[on[i].device].push({ name: null, key: on[i].key, cc: on[i].cc, value: on[i].value, e: on[i] });
+    }
+    var on2 = [];
+    for (d in byDev) {
+        for (i = 0; i < byDev[d].length; i++) {
+            var nm = byDev[d][i].tidal;
+            for (var g = 0; g < engage[d].length; g++) {
+                var en2 = engage[d][g];
+                if (en2.name === nm) { continue; }            // the amount itself: nothing to add
+                on2.push({ "with": nm, key: en2.key, cc: en2.cc, value: Math.round(en2.value * 1000) / 1000,
+                           device: en2.e.device, param: en2.e.param, occurrence: en2.e.occurrence,
+                           order: en2.e.order, min: en2.e.min, max: en2.e.max, alwaysOn: en2.e.alwaysOn });
+            }
+        }
+    }
+    tr.on = on2;
     var dormant = [];
     for (name in tr.fx) { if (tr.fx[name].inPalette === false) { dormant.push(name); } }
     return { added: added, reclaimed: reclaimed, dormant: dormant, warn: warn };
@@ -794,8 +830,12 @@ function libraryEntries(lib, ch, rules) {
         out.push({ cc: f.cc, device: dev, param: par, occurrence: occ, min: f.min, max: f.max,
                    neutral: position(restOf(f), f.min, f.max), always_on: aOn, key: dev + "/" + par, tidal: name });
     }
+    var mapped = {};
+    for (i = 0; i < out.length; i++) { mapped[out[i].cc] = true; }
     for (i = 0; i < tr.on.length; i++) {
         var o = tr.on[i];
+        if (mapped[o.cc]) { continue; }                   // an amount that also has its own name
+        mapped[o.cc] = true;
         out.push({ cc: o.cc, device: o.device, param: o.param, occurrence: o.occurrence || 0,
                    min: o.min, max: o.max, neutral: 0,
                    always_on: o.alwaysOn !== undefined ? o.alwaysOn : has(rules.alwaysOn, o.device),
@@ -1094,6 +1134,10 @@ function endMirror(error) {
 // replies from EventFXHelper: helper /loaded <id> <ok> <index> <message...>
 function helper() {
     var a = arrayfromargs(arguments), addr = a[0];
+    if (addr === "/refill") {
+        if (Number(a[1]) === trackIndex()) { instRefill(a.slice(2).join(" ")); }
+        return;
+    }
     if (addr !== "/loaded") {
         if (addr === "/status" || addr === "/error") { post("EventFX: helper " + a.slice(1).join(" ") + "\n"); }
         return;
@@ -1149,32 +1193,60 @@ function inspect() {
 }
 
 // ---- commands: update / rest / neutral ------------------------------------------
+// end of an update: report it (failures go to the status line), tell whoever asked for it
+// (an instrument change from Tidal) and never leave a refill pending
+var updateDone = null;      // function (ok, text) or null
+function updateEnd(ok, text, quiet) {
+    if (!ok && !quiet) { say(text); }
+    if (!ok) { refillNext = false; }
+    if (updateDone) { var f = updateDone; updateDone = null; f(ok, text); }
+}
+
+// /refill <track index> <name> from EventFXHelper (# i "name" in Tidal): chain 1 has the new
+// instrument; wait until no note is held (Tidal hushes first), then refill and report back
+function instRefill(name) {
+    var tries = 0, idx = trackIndex();
+    function attempt() {
+        if ((held > 0 || mirror || !apiOk) && tries++ < 50) {        // up to ~5 s
+            var t = new Task(attempt, this);
+            t.schedule(100);
+            return;
+        }
+        updateDone = function (ok, text) {
+            outlet(1, "/refilled", idx, ok ? 1 : 0, ok ? "now plays '" + name + "' (" + text + ")" : text);
+        };
+        held = 0;                               // notes cut off by the hush: nothing is really held
+        say("instrument '" + name + "' - refilling chains...");
+        refill();
+    }
+    attempt();
+}
 // update: chain 1 + track effects -> library (names, CC per track, resting values) -> files -> rebuild
 function update(note) {
-    if (!apiReady()) { notReady("update"); return; }
-    if (!findHome()) { noHome("update"); return; }
-    if (held > 0) { say("update: notes are playing - stop first"); return; }
-    if (mirror) { say("update: still mirroring - wait"); return; }
+    if (!apiReady()) { notReady("update"); return updateEnd(false, "Live API not ready", true); }
+    if (!findHome()) { noHome("update"); return updateEnd(false, "can't find ~/.config/tidal", true); }
+    if (held > 0) { return updateEnd(false, "update: notes are playing - stop first"); }
+    if (mirror) { return updateEnd(false, "update: still mirroring - wait"); }
     var t0 = now();
     calls = 0; api = null;
     syncChannel();
     var ch = trackChannel();
-    if (!ch) { say("update: set the track number (1-16) in the 'channel' box first"); return; }
+    if (!ch) { return updateEnd(false, "update: set the track number (1-16) in the 'channel' box first"); }
     var clash = channelClash(ch);
-    if (clash) { say("update: track \"" + clash + "\" also uses channel " + ch + " - give this track its own number"); return; }
-    if (!stateBox()) { noStateBox("update"); return; }
+    if (clash) { return updateEnd(false, "update: track \"" + clash + "\" also uses channel " + ch + " - give this track its own number"); }
+    if (!stateBox()) { noStateBox("update"); return updateEnd(false, "no [pattr efxstate] in EventFX", true); }
     var rules = readRules();
     myState = loadState();
     var lib = setLibrary();
     lib.tracks[String(ch)] = myState ? clone(myState) : { fx: {}, on: [] };
 
     var scan = scanPalette(rules);
-    if (scan.error) { say("update: " + scan.error); return; }
+    if (scan.error) { return updateEnd(false, "update: " + scan.error); }
     var rep = mergeTrack(lib, ch, scan.entries);
-    if (rep.error) { say("update: " + rep.error); return; }
+    if (rep.error) { return updateEnd(false, "update: " + rep.error); }
 
     saveState(lib.tracks[String(ch)]);
-    if (!writeTidal(setLibrary())) { say("update: cannot write " + TIDAL_FILE); return; }
+    if (!writeTidal(setLibrary())) { return updateEnd(false, "update: cannot write " + TIDAL_FILE); }
 
     var n = 0;
     for (var i = 0; i < scan.entries.length; i++) { if (scan.entries[i].tidal) { n++; } }
@@ -1199,10 +1271,12 @@ function update(note) {
     say(msg + " - mirroring chains...");
     startMirror(restMap, function (error, report, problems) {
         build();
-        if (error) { say(msg + ", mirror stopped: " + error); return; }
-        say(msg + "; mirror: " + report + (problems ? " - " + problems + " problems, see console" : "") +
-            " (" + (now() - t0) + " ms)");
+        if (error) { return updateEnd(false, msg + ", mirror stopped: " + error); }
+        var done = msg + "; mirror: " + report + (problems ? " - " + problems + " problems, see console" : "") +
+                   " (" + (now() - t0) + " ms)";
+        say(done);
         if (typeof note === "string" && note) { say(note); }
+        updateEnd(!problems, problems ? done : nChains + " chains", true);
     });
 }
 

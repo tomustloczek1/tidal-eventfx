@@ -23,6 +23,12 @@
 #       needed and fires its first empty clip slot: Live starts recording at the next bar (global
 #       launch quantization), no count-in; cycles > 0 stops after that many bars (4 beats each)
 #   /recstop <channel>                      -> stops that track's recording at the next bar
+#   /inst <channel> <name>                  -> loads preset/instrument <name> into rack chain 1 of that
+#                                              track (hot-swap), then asks its EventFX to refill chains
+#                                              2..N; the result goes to Tidal (UDP 11013): /inst ch ok text
+#   /refilled <track index> <ok> <text>     <- from EventFX when that refill is done
+#   /instlist                               -> writes every instrument/preset name of the browser to
+#                                              ~/.config/tidal/instruments.txt (for Tab in Neovim)
 #   /recmany <cycles> <channel> ...         -> /status: records several tracks at once, all in the
 #                                              same scene row (the first row empty on all of them)
 #   /inchan <id> <track> <channel>          -> /status: sets the track's MIDI input channel ("Ch. N")
@@ -44,10 +50,13 @@ import time
 import Live
 from _Framework.ControlSurface import ControlSurface
 
-VERSION = 12
+VERSION = 13
 LISTEN = ("127.0.0.1", 11010)
 REPLY = ("127.0.0.1", 11011)
 TIDAL = ("127.0.0.1", 11012)  # reccal result for Tidal: /reccal <ok 0|1> <ms late (float)>
+TIDAL_INST = ("127.0.0.1", 11013)  # instrument changes for Tidal: /inst <ch> <ok> <text>, /instlist <n> <text>
+INST_LIST = os.path.expanduser("~/.config/tidal/instruments.txt")
+INST_ROOTS = ("instruments", "drums", "sounds", "user_library")   # browser roots listed by /instlist
 SEARCH_DEPTH = 6            # browser levels searched below each root
 # where to look, in this order (each root is searched completely before the next one)
 DEVICE_ROOTS = ("max_for_live", "plugins", "user_library", "audio_effects", "instruments")
@@ -131,6 +140,8 @@ class EventFXHelper(ControlSurface):
         self._cals = []         # /reccal recordings waiting to be measured
         self._arms = []         # tracks armed by /reccal: disarmed when its recording ends
         self._ends = []         # /record, /recmany: stop the new clip (no auto-play) + disarm at the end
+        self._insts = {}        # track index -> {"ch", "name", "t0"}: instrument changes in progress
+        self._listing = None    # /instlist walk in progress: {"stack", "names", "seen"}
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(LISTEN)
@@ -191,6 +202,12 @@ class EventFXHelper(ControlSurface):
             self._recstop(int(args[0]))
         elif address == "/reccal":
             self._reccal(int(args[0]))
+        elif address == "/inst":
+            self._inst(int(args[0]), str(args[1]))
+        elif address == "/refilled":
+            self._refilled(int(args[0]), int(args[1]), " ".join(str(a) for a in args[2:]))
+        elif address == "/instlist":
+            self._instlist()
         elif address == "/inchan":
             self._inchan(int(args[1]), int(args[2]))
         else:
@@ -362,6 +379,104 @@ class EventFXHelper(ControlSurface):
             return False                    # this Live version can't tell - go ahead
         self._reply("/error", "%s: Link was off in Live - turned it on, run %s again in a few seconds" % (what, what))
         return True
+
+    # ---- instrument per track (# i "name" in Tidal) ------------------------------------
+    def _to_tidal_inst(self, *args):
+        try:
+            self._sock.sendto(osc_encode(*args), TIDAL_INST)
+        except Exception as e:
+            self.log_message("EventFXHelper: message to Tidal failed: %s" % e)
+
+    def _track_index(self, track):
+        return next((i for i, t in enumerate(self.song().tracks) if t._live_ptr == track._live_ptr), -1)
+
+    def _inst(self, ch, name):
+        track = self._track_for_channel(ch)
+        if track is None:
+            return self._to_tidal_inst("/inst", ch, 0, "no track takes MIDI channel %d" % ch)
+        rack = next((d for d in track.devices if d.can_have_chains), None)
+        chains = list(rack.chains) if rack is not None else []
+        if not chains:
+            return self._to_tidal_inst("/inst", ch, 0, "no tidal rack on track '%s'" % track.name)
+        devs = list(chains[0].devices)
+        at = next((i for i, d in enumerate(devs) if d.type == Live.Device.DeviceType.instrument), None)
+        if at is None:
+            return self._to_tidal_inst("/inst", ch, 0, "no instrument in chain 1 of track '%s'" % track.name)
+        if devs[at].name.lower() == name.lower():
+            return self._to_tidal_inst("/inst", ch, 1, "'%s' is already there" % devs[at].name)
+        ti = self._track_index(track)
+        if ti in self._insts:
+            return self._to_tidal_inst("/inst", ch, 0, "track '%s' is still changing its instrument" % track.name)
+        self._insts[ti] = {"ch": ch, "name": name, "t0": time.time()}
+        self._queue.append({"id": "inst", "inst": ti, "track": ti, "chain": 0, "at": at, "name": name,
+                            "swap": True, "cls": "", "scope": "preset"})
+
+    # chain 1 has the new instrument (or failed): the EventFX of that track copies it everywhere
+    def _inst_job_done(self, job, ok, message):
+        ti = job["inst"]
+        p = self._insts.get(ti)
+        if p is None:
+            return
+        if not ok:
+            self._insts.pop(ti, None)
+            return self._to_tidal_inst("/inst", p["ch"], 0, message)
+        p["t_chain1"] = time.time()
+        self._reply("/refill", ti, p["name"])
+
+    def _refilled(self, ti, ok, text):
+        p = self._insts.pop(ti, None)
+        if p is None:
+            return
+        self._to_tidal_inst("/inst", p["ch"], ok, "%s (%.1f s)" % (text, time.time() - p["t0"]))
+
+    def _tick_insts(self):
+        for ti, p in list(self._insts.items()):         # EventFX never answered
+            if time.time() - p["t0"] > 90:
+                self._insts.pop(ti, None)
+                self._to_tidal_inst("/inst", p["ch"], 0, "no answer from EventFX on that track (90 s)")
+
+    # every loadable instrument / preset name, walked a few hundred items per tick (Live's UI
+    # thread runs this, a full walk at once would freeze it)
+    def _instlist(self):
+        if self._listing is not None:
+            return self._to_tidal_inst("/instlist", 0, "already listing")
+        b = Live.Application.get_application().browser
+        stack = [(getattr(b, r), [r]) for r in reversed(INST_ROOTS) if hasattr(b, r)]
+        self._listing = {"stack": stack, "names": set(), "seen": 0, "t0": time.time()}
+
+    def _tick_listing(self):
+        job = self._listing
+        n = 0
+        while job["stack"] and n < 300:
+            item, path = job["stack"].pop()
+            n += 1
+            job["seen"] += 1
+            name = item.name
+            is_file = item.is_loadable and "." in name[-6:]
+            if len(path) > 1 and item.is_loadable:
+                in_user = path[0] == "user_library"
+                if not in_user or ("Instruments" in path or "Drums" in path):
+                    if not in_user or is_file:
+                        job["names"].add(name.rsplit(".", 1)[0] if is_file else name)
+            if not is_file and len(path) <= SEARCH_DEPTH + 1:
+                try:
+                    kids = list(item.children)
+                except Exception:
+                    kids = []
+                for c in reversed(kids):
+                    job["stack"].append((c, path + [c.name]))
+        if job["stack"]:
+            return
+        self._listing = None
+        names = sorted(job["names"], key=lambda x: x.lower())
+        try:
+            os.makedirs(os.path.dirname(INST_LIST), exist_ok=True)
+            with open(INST_LIST, "w") as f:
+                f.write("\n".join(names) + "\n")
+            self._to_tidal_inst("/instlist", len(names), "%d names in %s (%d browser items, %.0f s)" % (
+                len(names), INST_LIST, job["seen"], time.time() - job["t0"]))
+        except Exception as e:
+            self._to_tidal_inst("/instlist", 0, "can't write %s: %s" % (INST_LIST, e))
 
     # ---- recording offset: one bar with one note per cycle (reccal in Tidal) -------------
     def _reccal(self, ch):
@@ -622,6 +737,8 @@ class EventFXHelper(ControlSurface):
             self._queue.insert(0, job)
             return
         load_ms = int((time.time() - job.get("t_load", time.time())) * 1000)
+        if job.get("inst") is not None:
+            return self._inst_job_done(job, ok, message)
         self._reply("/loaded", job["id"], 1 if ok else 0, index,
                     "%s (search %d ms, load %d ms)" % (message, job.get("search_ms", 0), load_ms))
 
@@ -659,6 +776,10 @@ class EventFXHelper(ControlSurface):
             self._tick_arms()
         if self._ends:
             self._tick_ends()
+        if self._insts:
+            self._tick_insts()
+        if self._listing is not None:
+            self._tick_listing()
         if self._cals:
             self._tick_cals()
         if self._job is not None:
@@ -702,6 +823,8 @@ class EventFXHelper(ControlSurface):
                     self._forget(job["name"], job["scope"])     # stale browser item: search again
                     job["retried"] = True
                     self._queue.insert(0, job)
+                elif job.get("inst") is not None:
+                    self._inst_job_done(job, False, str(e))
                 else:
                     self._reply("/loaded", job["id"], 0, -1, str(e))
         elif self._saved_track is not None:

@@ -151,17 +151,23 @@ toMidiWith ccMap onMap ch p0 = (toRational <$> segment 1 (cF 0 "midiShift")) <~ 
   where
     p = p0 # m ch
     ccs = flatpat $ fmap toCCs p          -- list per event -> simultaneous CC events
-    toCCs ev =
-      [ ccEvent ev num (min 1 (max 0 v) * 126)
-      | (name, val) <- Map.toList ev
-      , Just num <- [Map.lookup name ccTrack]
-      , Just v <- [getF val] ]
-      ++
-      [ ccEvent ev num (x * 126)          -- e.g. BPF Dry/Wet on together with bpfA
-      | name <- Map.keys ev
-      , Just ons <- [Map.lookup name onTrack]
-      , (num, x) <- ons ]
+    toCCs ev = direct ++ engage
       where
+        -- params written in the pattern
+        direct =
+          [ ccEvent ev num (min 1 (max 0 v) * 126)
+          | (name, val) <- Map.toList ev
+          , Just num <- [Map.lookup name ccTrack]
+          , Just v <- [getF val] ]
+        explicit = [ num | (name, _) <- Map.toList ev, Just num <- [Map.lookup name ccTrack] ]
+        -- engage: any param of an effect turns its Dry/Wet / amount up (to the chain-1 knob,
+        -- or 100% if that knob is at rest); once per CC, and a value written in the pattern
+        -- (e.g. # grainDelay 0.3) wins
+        engage =
+          [ ccEvent ev num (x * 126)
+          | (num, x) <- nubBy (\a b -> fst a == fst b)
+                          [ o | name <- Map.keys ev, Just ons <- [Map.lookup name onTrack], o <- ons ]
+          , num `notElem` explicit ]
         chan    = maybe 1 (\c -> floor c + 1) (Map.lookup "midichan" ev >>= getF) :: Int
         ccTrack = Map.findWithDefault Map.empty chan ccMap
         onTrack = Map.findWithDefault Map.empty chan onMap

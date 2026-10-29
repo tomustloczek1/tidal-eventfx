@@ -1,0 +1,35 @@
+-- 05-helper.tidal : OSC to EventFXHelper (Remote Script in Live, port 11010) + shared helpers
+-- (loaded from f/ by load-functions.tidal, before 06-inst and 30-rec, which use it)
+
+import qualified Sound.Osc.Fd as O
+import qualified Sound.Osc.Transport.Fd.Udp as U
+import qualified Sound.Tidal.Boot as B
+import System.IO (hFlush, stdout)
+import Control.Concurrent.MVar (newMVar, withMVar)
+
+-- one line at a time: ghci writes character by character, so two threads printing at once
+-- would mix their letters
+sayLock <- newMVar ()
+
+:{
+-- one OSC message to EventFXHelper
+helperSend :: String -> [O.Datum] -> IO ()
+helperSend addr args =
+  O.withTransport (U.openUdp "127.0.0.1" 11010) (\t -> O.sendMessage t (O.message addr args))
+
+-- number / text from an OSC argument (answers from the helper)
+oscNum :: O.Datum -> Maybe Double
+oscNum (O.Int32 x)  = Just (fromIntegral x)
+oscNum (O.Float x)  = Just (realToFrac x)
+oscNum (O.Double x) = Just x
+oscNum _            = Nothing
+
+oscText :: O.Datum -> String
+oscText (O.AsciiString s) = O.ascii_to_string s
+oscText d                 = maybe "" show (oscNum d)
+
+-- one line for the Tidal window, whole and flushed at once (background threads print with
+-- this; under tidal.nvim ghci writes into a pipe, not a terminal)
+say :: String -> IO ()
+say s = withMVar sayLock (\_ -> putStrLn s >> hFlush stdout)
+:}

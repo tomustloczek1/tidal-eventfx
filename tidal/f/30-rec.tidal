@@ -1,6 +1,7 @@
 -- 30-rec.tidal : recording into Live through EventFXHelper (Remote Script, OSC on 11010)
 -- (loaded from f/ by load-functions.tidal, after toolz.tidal and toolz-fx.tidal: needs toMidi,
---  bpmState / shiftOf / recRef from toolz.tidal)
+--  bpmState / shiftOf / recRef from toolz.tidal, helperSend / say from 05-helper,
+--  instChanges from 06-inst)
 --
 --   rec 12 d1 $ urm 1 "intro!4 verse!8" [...] [...]   -- a whole song, all its tracks
 --   rec 4  d2 $ toMidi 2 $ n "0 ~ 7 3" # redux 0.4    -- any toMidi pattern
@@ -12,23 +13,22 @@
 -- plays on (found from its MIDI channels) records <cycles> cycles into the same scene row (the
 -- first row that is empty on all of them). Until then the end of the pattern plays (1-2 bars);
 -- afterwards the pattern goes silent, the new clips don't start playing, the tracks are disarmed.
+-- If the pattern asks for a different instrument (# i "..."), rec first loads it and starts
+-- recording when it is ready (if loading fails, 06-inst says why and nothing is recorded).
 -- needs Link on in Live (Tidal cycles = Live bars) and Launch Quantization 1 Bar
 
+-- each file imports everything it uses, so it also loads on its own (:script)
 import qualified Sound.Osc.Fd as O
 import qualified Sound.Osc.Transport.Fd.Udp as U
+import qualified Sound.Tidal.Boot as B
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Monad (join)
+import Control.Monad (join)   -- not `when`: Tidal has its own
 import System.Timeout (timeout)
 import Data.IORef
 import Text.Printf (printf)
 :m + Data.List
 
 :{
--- one OSC message to EventFXHelper
-helperSend :: String -> [O.Datum] -> IO ()
-helperSend addr args =
-  O.withTransport (U.openUdp "127.0.0.1" 11010) (\t -> O.sendMessage t (O.message addr args))
-
 -- low level: record one track (MIDI channel) for `cycles` cycles from the next bar (0 = until recstop)
 record :: Int -> Int -> IO ()
 record ch cycles = helperSend "/record" [O.int32 ch, O.int32 cycles]
@@ -44,8 +44,32 @@ midiChans n pat = sort $ nub
 
 -- play the pattern from its start (its cycle 0 on the bar after next) and record `cycles`
 -- cycles on every track it plays on, all in one scene row
+-- (a different instrument, # i "...", is loaded first; the recording starts when it is ready)
 rec :: Int -> (ControlPattern -> IO ()) -> ControlPattern -> IO ()
 rec cycles d pat = do
+  changing <- instChanges pat
+  if null (midiChans (if cycles > 0 then cycles else 16) pat)
+    then say "rec: the pattern has no MIDI notes (toMidi missing?)"
+  else if null changing
+    then recStart cycles d pat
+    else do
+      d pat                       -- starts the instrument change (hush, load, resume)
+      _ <- forkIO $ do
+        idle <- waitIdle 1100     -- up to 110 s (kits with many samples)
+        left <- instChanges pat
+        if idle && null left then recStart cycles d pat else return ()   -- a failed load: 06-inst says why
+      return ()
+
+-- wait (steps of 0.1 s) until no instrument change is running; False = still busy at the end
+waitIdle :: Int -> IO Bool
+waitIdle 0 = fmap not (readIORef busyRef)
+waitIdle k = do
+  busy <- readIORef busyRef
+  if busy then threadDelay 100000 >> waitIdle (k - 1) else return True
+
+-- the recording itself: restart the pattern on the bar after next, send /recmany just before
+recStart :: Int -> (ControlPattern -> IO ()) -> ControlPattern -> IO ()
+recStart cycles d pat = do
   nowC <- fmap realToFrac (streamGetnow tidal) :: IO Double
   cps  <- fmap realToFrac (streamGetcps tidal) :: IO Double
   (b, k) <- readIORef recRef
@@ -57,39 +81,30 @@ rec cycles d pat = do
       -- recording's last bar line moves by that much too (the next pass is cut off, not recorded)
       end   = toRational (fromIntegral (start + cycles) - sh * b / 240)
       upTo  = if cycles > 0 then filterWhen (< end) else id
-  if null chans
-    then putStrLn "rec: the pattern has no MIDI notes (toMidi missing?)"
-    else do
-      d $ upTo $ rotR (fromIntegral start) pat
-      _ <- forkIO $ do
-        -- sent just inside the bar before the start, so Live's "next bar" is the pattern's cycle 0
-        threadDelay (max 0 (round (wait * 1000000)))
-        helperSend "/recmany" (O.int32 cycles : map O.int32 chans)
-        printf "rec: %s on track(s) %s, starting now\n"
-               (if cycles > 0 then show cycles ++ " cycles, then silence" else "until recstop" :: String)
-               (intercalate ", " (map show chans))
-      return ()
-
--- number from an OSC argument
-oscNum :: O.Datum -> Maybe Double
-oscNum (O.Int32 x)  = Just (fromIntegral x)
-oscNum (O.Float x)  = Just (realToFrac x)
-oscNum (O.Double x) = Just x
-oscNum _            = Nothing
+  d $ upTo $ rotR (fromIntegral start) pat
+  _ <- forkIO $ do
+    -- sent just inside the bar before the start, so Live's "next bar" is the pattern's cycle 0
+    threadDelay (max 0 (round (wait * 1000000)))
+    helperSend "/recmany" (O.int32 cycles : map O.int32 chans)
+    say (printf "rec: %s on track(s) %s, starting now"
+                (if cycles > 0 then show cycles ++ " cycles, then silence" else "until recstop" :: String)
+                (intercalate ", " (map show chans)))
+  return ()
 
 -- calibration: d16 plays two short notes per cycle on channel ch (MIDI note 0, so other
 -- patterns on that channel don't disturb it), EventFXHelper records two bars, measures how
 -- many ms after the beat they landed, deletes the clip and sends the result here (UDP 11012);
 -- the new midiShift is used at once and saved in ~/.config/tidal/midishift.txt for the output
--- in use (bt / wire, see bpm in toolz.tidal); runs in the background, the prompt stays free
+-- in use (bt / wire, see bpm in toolz.tidal); runs in the background, the prompt stays free.
+-- Uses Boot's d16 directly, so an instrument change never brings the test notes back.
 reccalOn :: Int -> IO ()
 reccalOn ch = do
   _ <- forkIO $ do
-    d16 $ toMidi (fromIntegral ch) $ n "-60*2" # legato 0.1   -- MIDI note 0, short
+    B.d16 $ toMidi (fromIntegral ch) $ n "-60*2" # legato 0.1   -- MIDI note 0, short
     r <- O.withTransport (U.udpServer "127.0.0.1" 11012) $ \t -> do
       helperSend "/reccal" [O.int32 ch]
       timeout 25000000 (O.recvMessage t)
-    d16 silence
+    B.d16 silence
     case fmap O.messageDatum (join r) of
       Just [okD, msD] | Just ok <- oscNum okD, Just ms <- oscNum msD, ok > 0 -> do
         (b, k) <- readIORef recRef
@@ -98,11 +113,11 @@ reccalOn ch = do
         setShift k new
         bpmState k b
         if abs ms < 2
-          then printf "reccal: on the beat (%+.1f ms) - midiShift (%s) %.4f, saved\n" ms k new :: IO ()
-          else printf "reccal: notes were %.1f ms %s - midiShift (%s) %.4f -> %.4f, saved and in use\n"
-                      (abs ms) (if ms > 0 then "late" else "early" :: String) k old new
-      Just _  -> putStrLn "reccal: no measurement - see the EventFX status in Live"
-      Nothing -> putStrLn "reccal: no answer from EventFXHelper in 25 s (helper 9 running? Link on?)"
+          then say (printf "reccal: on the beat (%+.1f ms) - midiShift (%s) %.4f, saved" ms k new)
+          else say (printf "reccal: notes were %.1f ms %s - midiShift (%s) %.4f -> %.4f, saved and in use"
+                           (abs ms) (if ms > 0 then "late" else "early" :: String) k old new)
+      Just _  -> say "reccal: no measurement - see the EventFX status in Live"
+      Nothing -> say "reccal: no answer from EventFXHelper in 25 s (helper running? Link on?)"
   return ()
 
 -- the offset is the same for every track, so channel 1 is enough

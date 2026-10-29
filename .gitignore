@@ -10,3 +10,5 @@ __pycache__/
 tidal/midishift.txt
 # personal Tidal shortcuts, not shared
 tidal/f/10-own.tidal
+tidal/instruments.txt
+tidal/toolz-fx.tidal
