@@ -34,7 +34,16 @@
 #   /inchan <id> <track> <channel>          -> /status: sets the track's MIDI input channel ("Ch. N")
 #   /want <channel> <name>                  <- from Tidal (toMidi met a name without a CC on that track):
 #                                              -> /fxwant <channel> <name> to EventFX, which maps it
-#   /wanted <channel> <ok> <text>           <- from EventFX -> Tidal (UDP 11015): /fx <ok> <text>
+#   /wanted <channel> <ok> <text>           <- from EventFX -> Tidal (UDP 11015): /fx <ok> <channel> <text>
+#                                              (ok 2: "<tier|device> <name>" - Tidal adds that effect: /fxadd)
+#   /fxclean <channel> <tier|device> ...    <- from Tidal: -> /fxcleanit to EventFX, which removes those
+#                                              devices ("chain|Erosion", "track|Utility") and their CCs
+#   /fxcleaned <channel> <ok> <text>        <- from EventFX -> Tidal (UDP 11016)
+#   /fxadd <channel> <tier|device> <name> ...  <- from Tidal: -> /fxaddit to EventFX, which adds those
+#                                              effects (loaded with /addfx) and maps the names
+#   /fxadded <channel> <ok> <text>          <- from EventFX -> Tidal (UDP 11017)
+#   /addfx <id> <track> <chain> <after> <key>  -> /loaded: loads the catalog item <key> (its browser
+#                                              path) right after device <after>, like /load
 #   /fxscan [new|all|auto|stop]                  -> ~/.config/tidal/fx-catalog.json: the parameters of every
 #                                              audio effect in the browser (native, Max for Live, racks;
 #                                              presets get their device's params without loading). Each
@@ -65,7 +74,7 @@ import time
 import Live
 from _Framework.ControlSurface import ControlSurface
 
-VERSION = 15
+VERSION = 17
 LISTEN = ("127.0.0.1", 11010)
 REPLY = ("127.0.0.1", 11011)
 TIDAL = ("127.0.0.1", 11012)  # reccal result for Tidal: /reccal <ok 0|1> <ms late (float)>
@@ -73,7 +82,9 @@ TIDAL_INST = ("127.0.0.1", 11013)  # instrument changes for Tidal: /inst <ch> <o
 INST_LIST = os.path.expanduser("~/.config/tidal/instruments.txt")
 INST_ROOTS = ("instruments", "drums", "sounds", "user_library")   # browser roots listed by /instlist
 TIDAL_FX = ("127.0.0.1", 11014)    # fxscan progress for Tidal: /fxscan <text>
-TIDAL_FXW = ("127.0.0.1", 11015)   # mapping on demand, answers for Tidal: /fx <ok> <text>
+TIDAL_FXW = ("127.0.0.1", 11015)   # mapping on demand, answers for Tidal: /fx <ok> <channel> <text>
+TIDAL_CLEAN = ("127.0.0.1", 11016) # fxclean result for Tidal: /fxcleaned <ok> <text>
+TIDAL_ADD = ("127.0.0.1", 11017)   # automatic adding, result for Tidal: /fxadded <ok> <text>
 FX_CATALOG = os.path.expanduser("~/.config/tidal/fx-catalog.json")
 FX_ROOTS = ("user_library", "audio_effects", "max_for_live")   # walked in this order: your presets first
 FX_SKIP = ("ChainWatch", "Audio Effect Rack")   # never loaded for the catalog (an empty rack has no names)
@@ -96,7 +107,7 @@ PRESET_ROOTS_DEFAULT = ("user_library", "sounds", "instruments", "drums")
 # remembered browser paths: the second search for a name walks straight to it
 PATH_CACHE = os.path.expanduser("~/Library/Application Support/EventFXHelper/paths.json")
 LOAD_TIMEOUT_TICKS = 120    # ~12 s (update_display runs about every 100 ms; kits with samples are slow)
-REPLIES = ("/pong", "/track", "/found", "/loaded", "/status", "/error", "/refill", "/catalog", "/fxwant")
+REPLIES = ("/pong", "/track", "/found", "/loaded", "/status", "/error", "/refill", "/catalog", "/fxwant", "/fxcleanit", "/fxaddit")
 
 
 # ---- minimal OSC ------------------------------------------------------------------
@@ -242,9 +253,25 @@ class EventFXHelper(ControlSurface):
             self._reply("/fxwant", int(args[0]), str(args[1]))
         elif address == "/wanted":          # EventFX: how it went -> Tidal
             try:
-                self._sock.sendto(osc_encode("/fx", int(args[1]), " ".join(str(a) for a in args[2:])), TIDAL_FXW)
+                self._sock.sendto(osc_encode("/fx", int(args[1]), int(args[0]), " ".join(str(a) for a in args[2:])), TIDAL_FXW)
             except Exception as e:
                 self.log_message("EventFXHelper: message to Tidal failed: %s" % e)
+        elif address == "/fxclean":         # Tidal (:fxclean in Neovim): <channel> <tier|device> ...
+            self._reply("/fxcleanit", int(args[0]), *[str(a) for a in args[1:]])
+        elif address == "/fxcleaned":       # EventFX: done -> Tidal
+            try:
+                self._sock.sendto(osc_encode("/fxcleaned", int(args[1]), " ".join(str(a) for a in args[2:])), TIDAL_CLEAN)
+            except Exception as e:
+                self.log_message("EventFXHelper: message to Tidal failed: %s" % e)
+        elif address == "/fxadd":           # Tidal (a pattern used an effect the track hasn't): <ch> <key> <name> ...
+            self._reply("/fxaddit", int(args[0]), *[str(a) for a in args[1:]])
+        elif address == "/fxadded":         # EventFX: done -> Tidal
+            try:
+                self._sock.sendto(osc_encode("/fxadded", int(args[1]), " ".join(str(a) for a in args[2:])), TIDAL_ADD)
+            except Exception as e:
+                self.log_message("EventFXHelper: message to Tidal failed: %s" % e)
+        elif address == "/addfx":           # EventFX: <id> <track> <chain> <after> <catalog key>
+            self._addfx(args)
         elif address == "/catalogdone":
             self._catalog_done(int(args[0]) if args else 0, int(args[1]) if len(args) > 1 else 0)
         elif address == "/inchan":
@@ -631,7 +658,7 @@ class EventFXHelper(ControlSurface):
                     base = item.name.rsplit(".", 1)[0] if is_file else item.name
                     if kind is not None and base not in FX_SKIP:
                         s["found"]["/".join(path)] = {"item": item, "name": base, "kind": kind[0],
-                                                     "class": kind[1], "source": kind[2]}
+                                                     "class": kind[1], "source": kind[2], "path": path}
                 if not is_file and len(path) <= SEARCH_DEPTH + 1 and self._fx_descend(path):
                     try:
                         kids = list(item.children)
@@ -781,7 +808,7 @@ class EventFXHelper(ControlSurface):
                 pass
         items = {}
         for key, e in s["found"].items():
-            it = {"name": e["name"], "kind": e["kind"], "class": e["class"], "source": e["source"]}
+            it = {"name": e["name"], "kind": e["kind"], "class": e["class"], "source": e["source"], "path": e["path"]}
             if e["kind"] in FX_LOADED:
                 r = s["results"].get(key)
                 o = s["old"].get(key, {})
@@ -1007,6 +1034,19 @@ class EventFXHelper(ControlSurface):
                     queue.extend((c, p + [c.name]) for c in item.children)
         return None
 
+    # an effect from the catalog, by its browser path (fx-catalog.json): queued like /load
+    def _addfx(self, args):
+        job_id, track, chain, at, key = args[0], int(args[1]), int(args[2]), int(args[3]), str(args[4])
+        cat = self._read_catalog() or {"items": {}}
+        it = cat["items"].get(key)
+        if it is None:
+            return self._reply("/loaded", job_id, 0, -1, "'%s' is not in fx-catalog.json - run fxscan" % key)
+        item = self._walk(it.get("path") or key.split("/"))
+        if item is None:
+            return self._reply("/loaded", job_id, 0, -1, "'%s' is not in the browser any more - run fxscan" % it["name"])
+        self._queue.append({"id": job_id, "track": track, "chain": chain, "at": at, "name": it["name"],
+                            "swap": False, "cls": "", "scope": "device", "item": item})
+
     # ---- loading ----------------------------------------------------------------------
     def _target(self, job):
         """track, rack (or None), container with .devices for the job"""
@@ -1034,7 +1074,7 @@ class EventFXHelper(ControlSurface):
         if not 0 <= job["at"] < len(devices):
             raise LoadError("device %d not there (%d devices)" % (job["at"], len(devices)))
         t0 = time.time()
-        item = self._find(job["name"], job["scope"], job["cls"])
+        item = job.pop("item", None) or self._find(job["name"], job["scope"], job["cls"])
         job["search_ms"] = int((time.time() - t0) * 1000)
         if item is None:
             raise LoadError("'%s' not in the browser" % job["name"])

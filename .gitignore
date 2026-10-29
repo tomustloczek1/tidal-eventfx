@@ -12,3 +12,8 @@ tidal/midishift.txt
 tidal/f/10-own.tidal
 tidal/instruments.txt
 tidal/toolz-fx.tidal
+tidal/fx-catalog.json
+tidal/fx-catalog.json.tmp
+tidal/tidal-names.txt
+tidal/toolz-fx-catalog.tidal
+tidal/toolz-fx-names.tidal

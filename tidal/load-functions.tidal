@@ -1,4 +1,5 @@
--- load-functions.tidal : loads every *.tidal file from ~/.config/tidal/f/
+-- load-functions.tidal : loads toolz-fx-names.tidal and toolz-fx-catalog.tidal, then every *.tidal
+-- file from ~/.config/tidal/f/
 --
 -- files are loaded in alphabetical order, so prefix them with numbers when one
 -- depends on another (05-helper.tidal, 06-inst.tidal, 30-rec.tidal, ...)
@@ -8,6 +9,9 @@
 -- finished before the next one starts (":cmd" would queue all lines at once, and every
 -- nested :script would take the next queued line first: the files ran in reverse order)
 --
+-- toolz-fx-names.tidal (EventFX: the names of the effects on your tracks) and toolz-fx-catalog.tidal
+-- (EventFX after fxscan: names of every audio effect in Live's browser) come first, when they exist
+--
 -- load order in a session:
 --   :script ~/.config/tidal/toolz.tidal
 --   :script ~/.config/tidal/toolz-fx.tidal
@@ -15,6 +19,6 @@
 --
 -- after editing a file in f/ run this script again and re-evaluate your d1..d16
 
-:! for f in ~/.config/tidal/f/*.tidal; do [ -e "$f" ] && echo ":script $f"; done > /tmp/tidal-functions.ghci
+:! { for c in ~/.config/tidal/toolz-fx-names.tidal ~/.config/tidal/toolz-fx-catalog.tidal; do [ -f "$c" ] && echo ":script $c"; done; for f in ~/.config/tidal/f/*.tidal; do [ -e "$f" ] && echo ":script $f"; done; } > /tmp/tidal-functions.ghci
 
 :script /tmp/tidal-functions.ghci

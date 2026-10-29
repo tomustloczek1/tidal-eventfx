@@ -18,10 +18,30 @@
 -- (toMidi asks, see fxWant in toolz.tidal). The answers are printed here as they come:
 --   fx: track 1: saturatorDrive -> CC 12 (with saturator)
 --   fx: track 1: no Erosion in chain 1 - add it there and click update (erosion is Erosion's)
+--
+-- Adding: a name of an effect the track doesn't have (the catalog knows whose it is) adds that
+-- effect by itself: everything pauses, EventFXHelper loads it into rack chain 1 before ChainWatch
+-- (with static (...): right after the rack), EventFX updates (mirror) and maps the names, then
+-- every d-slot plays again. Each effect is tried once per session: fxaddRetry tries again.
+--   fx: track 1: adding Erosion (everything pauses)...
+--   fx: track 1: added Erosion (chain 1) - erosionFrequency -> CC 14, erosion -> CC 15
+--
+-- Cleaning: :fxclean N in Neovim lists the effects of track N whose names are in none of your
+-- open .tidal files and f/, and after "yes" calls fxclean: everything hushes, EventFX removes
+-- those devices (chain 1 + after the rack, the mirror does the other chains) and their CCs,
+-- then every d-slot plays again.
 
 import qualified Sound.Osc.Fd as O
 import qualified Sound.Osc.Transport.Fd.Udp as U
 import Control.Concurrent (forkIO)
+import Data.IORef
+import qualified Data.Map as Map
+import qualified Data.Set as Set
+import Control.Concurrent (threadDelay)
+import Control.Monad (forM_)
+import Data.List (nub, intercalate)
+import Data.Char (chr)
+import Numeric (readHex)
 import Control.Exception (try, SomeException)
 import System.Timeout (timeout)
 
@@ -55,23 +75,122 @@ fxscanStop = helperSend "/fxscan" [O.string "stop"] >> say "fxscan: stopping aft
 :}
 
 :{
--- prints EventFX's answers to mapping requests (UDP 11015) for the whole session; loading this
--- file again starts no second listener (the port is taken: the first one stays)
+-- "chain%7CErosion" -> "Erosion", "track%7CErosion" -> "Erosion (after the rack)"
+fxKeyText :: String -> String
+fxKeyText k = case break (== '|') (unpct k) of
+    ("track", _ : d) -> d ++ " (after the rack)"
+    (_, _ : d)       -> d
+    _                -> k
+  where
+    unpct ('%' : a : b : r) | [(x, "")] <- readHex [a, b] = chr x : unpct r
+    unpct (c : r) = c : unpct r
+    unpct [] = []
+:}
+
+fxAddQueue <- newIORef ([] :: [(Int, String, String)])
+fxAddTried <- newIORef (Set.empty :: Set.Set (Int, String))
+fxAddBusy  <- newIORef False
+
+:{
+-- EventFX says: the name is of an effect this track hasn't (ok 2). Collected for 0.3 s (the names
+-- of one pattern come together), then added in one go per track
+fxAddRequest :: Int -> String -> String -> IO ()
+fxAddRequest ch key name = do
+  tried <- readIORef fxAddTried
+  if Set.member (ch, key) tried
+    then return ()
+    else do
+      modifyIORef fxAddQueue ((ch, key, name) :)
+      running <- atomicModifyIORef' fxAddBusy (\b -> (True, b))
+      if running then return () else forkIO fxAddRun >> return ()
+
+fxAddRun :: IO ()
+fxAddRun = do
+  threadDelay 300000
+  q <- atomicModifyIORef' fxAddQueue (\q0 -> ([], reverse q0))
+  tried <- readIORef fxAddTried
+  forM_ (nub [ c | (c, _, _) <- q ]) $ \ch -> do
+    let items = nub [ (k, nm) | (c, k, nm) <- q, c == ch, not (Set.member (ch, k) tried) ]
+        keys  = nub (map fst items)
+    if null keys then return () else do
+      modifyIORef fxAddTried (Set.union (Set.fromList [ (ch, k) | k <- keys ]))
+      say ("fx: track " ++ show ch ++ ": adding " ++ intercalate ", " (map fxKeyText keys) ++ " (everything pauses)...")
+      writeIORef busyRef True                     -- d1 ... only remember their patterns meanwhile
+      mapM_ ($ silence) dOrig
+      r <- try $ O.withTransport (U.udpServer "127.0.0.1" 11017) $ \t -> do
+        helperSend "/fxadd" (O.int32 ch : concat [ [O.string k, O.string nm] | (k, nm) <- items ])
+        timeout 300000000 (O.recvMessage t)       -- loading + mirroring 30 chains takes a while
+      case r of
+        Right (Just (Just msg)) -> say ("fx: " ++ unwords (map oscText (drop 1 (O.messageDatum msg))))
+        Right _                 -> say "fx: no answer from EventFX in 5 min (helper 17 running?)"
+        Left e                  -> say ("fx: " ++ show (e :: SomeException))
+      writeIORef busyRef False
+      slots <- readIORef slotsRef
+      mapM_ (\(k, p) -> (dOrig !! (k - 1)) p) (Map.toList slots)
+  more <- readIORef fxAddQueue                    -- names that came in meanwhile
+  if null more then writeIORef fxAddBusy False else fxAddRun
+
+-- the effects that could not be added are tried again the next time a pattern uses them
+fxaddRetry :: IO ()
+fxaddRetry = writeIORef fxAddTried Set.empty
+:}
+
+:{
+-- prints EventFX's answers to mapping requests (UDP 11015) and starts automatic adding (ok 2).
+-- Loading this file again replaces the listener: the old one is asked to stop (/fxlistenquit),
+-- so the new one works with the d-slots of the files just loaded
 fxListen :: IO ()
 fxListen = do
   _ <- forkIO $ do
-    r <- try $ O.withTransport (U.udpServer "127.0.0.1" 11015) $ \t -> do
-      let loop = do
-            m <- O.recvMessage t
-            case fmap O.messageDatum m of
-              Just (_ : rest) -> say ("fx: " ++ unwords (map oscText rest))
-              _               -> return ()
-            loop
-      loop
-    case r of
-      Left e  -> const (return ()) (e :: SomeException)
-      Right _ -> return ()
+    let open = try (U.udpServer "127.0.0.1" 11015) :: IO (Either SomeException U.Udp)
+    first <- open
+    sock <- case first of
+      Right u -> return (Right u)
+      Left _  -> do
+        _ <- try (O.withTransport (U.openUdp "127.0.0.1" 11015)
+                    (\t -> O.sendMessage t (O.message "/fxlistenquit" []))) :: IO (Either SomeException ())
+        threadDelay 300000
+        open
+    case sock of
+      Left e  -> say ("fx: can't listen for EventFX's answers: " ++ show e)
+      Right u -> do
+        let loop = do
+              m <- O.recvMessage u
+              case m of
+                Just msg | O.messageAddress msg == "/fxlistenquit" -> return ()
+                Just msg -> do
+                  case O.messageDatum msg of
+                    (okD : chD : rest)
+                      | Just ok <- oscNum okD, ok == 2, Just c <- oscNum chD
+                      , [k, nm] <- words (unwords (map oscText rest)) -> fxAddRequest (floor c) k nm
+                      | otherwise -> say ("fx: " ++ unwords (map oscText rest))
+                    _ -> return ()
+                  loop
+                Nothing -> loop
+        loop
+        O.close u
   return ()
 :}
 
 fxListen
+
+:{
+-- called by :fxclean in Neovim: devices as "chain|Erosion" / "track|Utility" (spaces as %20)
+fxclean :: Int -> [String] -> IO ()
+fxclean ch devs = do
+  _ <- forkIO $ do
+    writeIORef busyRef True                       -- d1 ... only remember their patterns meanwhile
+    mapM_ ($ silence) dOrig
+    say ("fxclean: track " ++ show ch ++ ": removing " ++ show (length devs) ++ " effect(s)...")
+    r <- try $ O.withTransport (U.udpServer "127.0.0.1" 11016) $ \t -> do
+      helperSend "/fxclean" (O.int32 ch : map O.string devs)
+      timeout 300000000 (O.recvMessage t)         -- removing from 30 chains takes Live a while
+    case r of
+      Right (Just (Just msg)) -> say ("fxclean: " ++ unwords (map oscText (drop 1 (O.messageDatum msg))))
+      Right _                 -> say "fxclean: no answer from EventFX in 5 min (helper 16 running?)"
+      Left e                  -> say ("fxclean: " ++ show (e :: SomeException))
+    writeIORef busyRef False
+    slots <- readIORef slotsRef
+    mapM_ (\(k, p) -> (dOrig !! (k - 1)) p) (Map.toList slots)
+  return ()
+:}
