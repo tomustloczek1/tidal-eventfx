@@ -32,6 +32,21 @@
 #   /recmany <cycles> <channel> ...         -> /status: records several tracks at once, all in the
 #                                              same scene row (the first row empty on all of them)
 #   /inchan <id> <track> <channel>          -> /status: sets the track's MIDI input channel ("Ch. N")
+#   /want <channel> <name>                  <- from Tidal (toMidi met a name without a CC on that track):
+#                                              -> /fxwant <channel> <name> to EventFX, which maps it
+#   /wanted <channel> <ok> <text>           <- from EventFX -> Tidal (UDP 11015): /fx <ok> <text>
+#   /fxscan [new|all|auto|stop]                  -> ~/.config/tidal/fx-catalog.json: the parameters of every
+#                                              audio effect in the browser (native, Max for Live, racks;
+#                                              presets get their device's params without loading). Each
+#                                              device is loaded for a moment on a temporary audio track at
+#                                              the end of the set. new: only what the catalog doesn't have
+#                                              yet (+ retries); all: everything again; auto (from EventFX
+#                                              after update): new ones only, nothing before the first scan;
+#                                              stop: finish the current device, write what was read so far.
+#                                              Progress to Tidal (UDP 11014): /fxscan <text>, the last
+#                                              one /fxscanend <text>; when done,
+#                                              /catalog to EventFX, which rewrites toolz-fx.tidal and
+#                                              answers /catalogdone <ok> <names>
 #   /reccal <channel>                       -> /status + /reccal <ok> <ms> to Tidal (port 11012): records 2 bars on that track, how late
 #                                              the first note lands after the bar line, deletes the clip
 # scope: "device" (default: Audio Effects, Max for Live, Plug-ins, Instruments, User Library)
@@ -50,13 +65,24 @@ import time
 import Live
 from _Framework.ControlSurface import ControlSurface
 
-VERSION = 13
+VERSION = 15
 LISTEN = ("127.0.0.1", 11010)
 REPLY = ("127.0.0.1", 11011)
 TIDAL = ("127.0.0.1", 11012)  # reccal result for Tidal: /reccal <ok 0|1> <ms late (float)>
 TIDAL_INST = ("127.0.0.1", 11013)  # instrument changes for Tidal: /inst <ch> <ok> <text>, /instlist <n> <text>
 INST_LIST = os.path.expanduser("~/.config/tidal/instruments.txt")
 INST_ROOTS = ("instruments", "drums", "sounds", "user_library")   # browser roots listed by /instlist
+TIDAL_FX = ("127.0.0.1", 11014)    # fxscan progress for Tidal: /fxscan <text>
+TIDAL_FXW = ("127.0.0.1", 11015)   # mapping on demand, answers for Tidal: /fx <ok> <text>
+FX_CATALOG = os.path.expanduser("~/.config/tidal/fx-catalog.json")
+FX_ROOTS = ("user_library", "audio_effects", "max_for_live")   # walked in this order: your presets first
+FX_SKIP = ("ChainWatch", "Audio Effect Rack")   # never loaded for the catalog (an empty rack has no names)
+FX_LOADED = ("native", "m4l", "rack")           # kinds that are loaded to read their parameters
+SCAN_TRACK = "fxscan (temporary)"
+SCAN_TIMEOUT_TICKS = 150   # ~15 s per device
+SCAN_SECONDS = {"native": 0.6, "rack": 4.0, "m4l": 4.0}   # measured: 464 devices (mostly racks) in 28 min
+SCAN_STABLE_TICKS = {"native": 1, "rack": 3, "m4l": 10}   # ticks the param count must stay the same
+                                                          # (a Max device adds its params after Max loads)
 SEARCH_DEPTH = 6            # browser levels searched below each root
 # where to look, in this order (each root is searched completely before the next one)
 DEVICE_ROOTS = ("max_for_live", "plugins", "user_library", "audio_effects", "instruments")
@@ -70,7 +96,7 @@ PRESET_ROOTS_DEFAULT = ("user_library", "sounds", "instruments", "drums")
 # remembered browser paths: the second search for a name walks straight to it
 PATH_CACHE = os.path.expanduser("~/Library/Application Support/EventFXHelper/paths.json")
 LOAD_TIMEOUT_TICKS = 120    # ~12 s (update_display runs about every 100 ms; kits with samples are slow)
-REPLIES = ("/pong", "/track", "/found", "/loaded", "/status", "/error")
+REPLIES = ("/pong", "/track", "/found", "/loaded", "/status", "/error", "/refill", "/catalog", "/fxwant")
 
 
 # ---- minimal OSC ------------------------------------------------------------------
@@ -142,6 +168,8 @@ class EventFXHelper(ControlSurface):
         self._ends = []         # /record, /recmany: stop the new clip (no auto-play) + disarm at the end
         self._insts = {}        # track index -> {"ch", "name", "t0"}: instrument changes in progress
         self._listing = None    # /instlist walk in progress: {"stack", "names", "seen"}
+        self._scan = None       # /fxscan in progress (see _fxscan)
+        self._cat_wait = None   # fxscan done, waiting for EventFX to rewrite toolz-fx: {"t", "auto", "text"}
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(LISTEN)
@@ -208,6 +236,17 @@ class EventFXHelper(ControlSurface):
             self._refilled(int(args[0]), int(args[1]), " ".join(str(a) for a in args[2:]))
         elif address == "/instlist":
             self._instlist()
+        elif address == "/fxscan":
+            self._fxscan(str(args[0]) if args else "new")
+        elif address == "/want":            # Tidal: a name without a CC on that track
+            self._reply("/fxwant", int(args[0]), str(args[1]))
+        elif address == "/wanted":          # EventFX: how it went -> Tidal
+            try:
+                self._sock.sendto(osc_encode("/fx", int(args[1]), " ".join(str(a) for a in args[2:])), TIDAL_FXW)
+            except Exception as e:
+                self.log_message("EventFXHelper: message to Tidal failed: %s" % e)
+        elif address == "/catalogdone":
+            self._catalog_done(int(args[0]) if args else 0, int(args[1]) if len(args) > 1 else 0)
         elif address == "/inchan":
             self._inchan(int(args[1]), int(args[2]))
         else:
@@ -437,12 +476,12 @@ class EventFXHelper(ControlSurface):
 
     # every loadable instrument / preset name, walked a few hundred items per tick (Live's UI
     # thread runs this, a full walk at once would freeze it)
-    def _instlist(self):
+    def _instlist(self, quiet=False):
         if self._listing is not None:
-            return self._to_tidal_inst("/instlist", 0, "already listing")
+            return None if quiet else self._to_tidal_inst("/instlist", 0, "already listing")
         b = Live.Application.get_application().browser
         stack = [(getattr(b, r), [r]) for r in reversed(INST_ROOTS) if hasattr(b, r)]
-        self._listing = {"stack": stack, "names": set(), "seen": 0, "t0": time.time()}
+        self._listing = {"stack": stack, "names": set(), "seen": 0, "t0": time.time(), "quiet": quiet}
 
     def _tick_listing(self):
         job = self._listing
@@ -473,12 +512,316 @@ class EventFXHelper(ControlSurface):
             os.makedirs(os.path.dirname(INST_LIST), exist_ok=True)
             with open(INST_LIST, "w") as f:
                 f.write("\n".join(names) + "\n")
-            self._to_tidal_inst("/instlist", len(names), "%d names in %s (%d browser items, %.0f s)" % (
-                len(names), INST_LIST, job["seen"], time.time() - job["t0"]))
+            if not job["quiet"]:
+                self._to_tidal_inst("/instlist", len(names), "%d names in %s (%d browser items, %.0f s)" % (
+                    len(names), INST_LIST, job["seen"], time.time() - job["t0"]))
         except Exception as e:
-            self._to_tidal_inst("/instlist", 0, "can't write %s: %s" % (INST_LIST, e))
+            if not job["quiet"]:
+                self._to_tidal_inst("/instlist", 0, "can't write %s: %s" % (INST_LIST, e))
 
     # ---- recording offset: one bar with one note per cycle (reccal in Tidal) -------------
+    # ---- effect catalog: every audio effect's parameter names (/fxscan) -----------------
+    def _to_tidal_fx(self, text, end=False):
+        """/fxscan <text> while it runs, /fxscanend <text> as the last message"""
+        try:
+            self._sock.sendto(osc_encode("/fxscanend" if end else "/fxscan", text), TIDAL_FX)
+        except Exception as e:
+            self.log_message("EventFXHelper: message to Tidal failed: %s" % e)
+
+    def _scan_say(self, text):
+        self.log_message("EventFXHelper: fxscan: " + text)
+        if self._scan is None or not self._scan["auto"]:
+            self._to_tidal_fx("fxscan: " + text)
+
+    @staticmethod
+    def _read_catalog():
+        try:
+            with open(FX_CATALOG) as f:
+                cat = json.load(f)
+            return cat if isinstance(cat, dict) and isinstance(cat.get("items"), dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _write_catalog(cat):
+        os.makedirs(os.path.dirname(FX_CATALOG), exist_ok=True)
+        tmp = FX_CATALOG + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cat, f, indent=0, sort_keys=True)
+        os.replace(tmp, FX_CATALOG)          # EventFX never reads a half-written file
+
+    def _fxscan(self, mode):
+        if mode == "stop":
+            if self._scan is None:
+                return self._to_tidal_fx("fxscan: nothing to stop", end=True)
+            if self._scan["phase"] != "load":
+                self._scan = None                # still walking the browser: nothing to keep
+                return self._to_tidal_fx("fxscan: stopped", end=True)
+            self._scan["todo"] = []              # the device being loaded finishes, then the
+            self._scan["stopped"] = True         # catalog is written with what was read so far
+            return
+        if mode not in ("new", "all", "auto"):
+            mode = "new"
+        if self._scan is not None:
+            if mode != "auto":
+                self._to_tidal_fx("fxscan: already running", end=True)
+            return
+        old = self._read_catalog()
+        if mode == "auto" and old is None:
+            return                               # the first scan is started by hand (fxscan in Tidal)
+        b = Live.Application.get_application().browser
+        stack = [(getattr(b, r), [r]) for r in reversed(FX_ROOTS) if hasattr(b, r)]
+        self._scan = {"mode": mode, "auto": mode == "auto", "phase": "walk", "stack": stack,
+                      "found": {}, "old": old["items"] if old else {}, "todo": [], "same": {},
+                      "results": {}, "done": 0, "failed": 0, "total": 0, "t0": time.time(),
+                      "t_say": time.time(), "track": None, "sel": None, "job": None, "seen": 0}
+        self._scan_say("walking Live's browser...")
+
+    @staticmethod
+    def _fx_descend(path):
+        """walk into this folder? (User Library: only Presets/Audio Effects)"""
+        if path[0] != "user_library" or len(path) == 1:
+            return True
+        if path[1] != "Presets":
+            return False
+        return len(path) == 2 or path[2] == "Audio Effects"
+
+    @staticmethod
+    def _fx_kind(path, item, is_file):
+        """(kind, class, source) of a browser item for the catalog, or None"""
+        name = item.name
+        root = path[0]
+        if not is_file:
+            if root == "audio_effects" and len(path) == 2 and item.is_device:
+                return ("native", name, "core")
+            return None
+        ext = name.rsplit(".", 1)[1].lower()
+        if root == "user_library":
+            if len(path) < 5:                    # user_library/Presets/Audio Effects/<folder>/<file>
+                return None
+            source, cls = "user", path[3]
+        elif root == "max_for_live":
+            # only audio effects: their folder says so ("Max Audio Effect", ".../Audio Effects")
+            if ext != "amxd" or not any("audio effect" in p.lower() for p in path[1:-1]):
+                return None
+            return ("m4l", "", "core")
+        else:
+            source, cls = "core", path[1]
+        if ext == "adv":
+            return ("preset", cls, source)
+        if ext == "adg":
+            return ("rack", "", source)
+        if ext == "amxd":
+            return ("m4l", "", source)
+        return None
+
+    def _tick_scan(self):
+        s = self._scan
+        if self._job is not None or self._queue:
+            return                               # EventFX is loading devices: wait for it
+        if s["phase"] == "walk":
+            n = 0
+            while s["stack"] and n < 300:
+                item, path = s["stack"].pop()
+                n += 1
+                s["seen"] += 1
+                is_file = item.is_loadable and "." in item.name[-7:]
+                if len(path) > 1:
+                    kind = self._fx_kind(path, item, is_file)
+                    base = item.name.rsplit(".", 1)[0] if is_file else item.name
+                    if kind is not None and base not in FX_SKIP:
+                        s["found"]["/".join(path)] = {"item": item, "name": base, "kind": kind[0],
+                                                     "class": kind[1], "source": kind[2]}
+                if not is_file and len(path) <= SEARCH_DEPTH + 1 and self._fx_descend(path):
+                    try:
+                        kids = list(item.children)
+                    except Exception:
+                        kids = []
+                    for c in reversed(kids):
+                        s["stack"].append((c, path + [c.name]))
+            if not s["stack"]:
+                self._scan_plan()
+            return
+        self._tick_scan_load()
+
+    def _scan_plan(self):
+        s = self._scan
+        found, old = s["found"], s["old"]
+        first = {}                               # (kind, name) -> key loaded for all of them
+        for key, e in found.items():
+            if e["kind"] not in FX_LOADED:
+                continue
+            o = old.get(key)
+            if s["mode"] == "new" and o is not None and o.get("params") is not None:
+                continue                         # known
+            if s["mode"] == "auto" and o is not None:
+                continue                         # known or failed before (a scan by hand retries)
+            k = (e["kind"], e["name"])           # the same device listed in two places: load it once
+            if k in first:
+                s["same"][first[k]].append(key)
+            else:
+                first[k] = key
+                s["same"][key] = [key]
+                s["todo"].append(key)
+        new = sum(1 for k in found if k not in old)
+        gone = sum(1 for k in old if k not in found)
+        if s["auto"] and not s["todo"] and not new and not gone:
+            self._scan = None                    # the browser has nothing new: nothing to do
+            self._instlist(quiet=True)           # instruments.txt for Tab, the same way
+            return
+        s["total"] = len(s["todo"])
+        if s["todo"]:
+            secs = sum(SCAN_SECONDS[found[k]["kind"]] for k in s["todo"])
+            self._scan_say("%d items in the browser, %d devices to load (about %d min) - a temporary "
+                           "track appears at the end of the set, keep working on other tracks"
+                           % (len(found), s["total"], max(1, int(secs / 60 + 0.5))))
+            s["phase"] = "load"
+        else:
+            self._scan_finish()
+
+    def _scan_track(self):
+        song = self.song()
+        s = self._scan
+        if s["sel"] is None:
+            s["sel"] = song.view.selected_track
+        song.create_audio_track(-1)
+        tr = list(song.tracks)[-1]
+        tr.name = SCAN_TRACK
+        try:
+            tr.mute = True
+        except Exception:
+            pass
+        s["track"] = tr
+        return tr
+
+    def _scan_track_alive(self):
+        tr = self._scan["track"]
+        if tr is None:
+            return False
+        try:
+            return any(t._live_ptr == tr._live_ptr for t in self.song().tracks)
+        except Exception:
+            return False
+
+    def _tick_scan_load(self):
+        s = self._scan
+        song = self.song()
+        if s["track"] is not None and not self._scan_track_alive():
+            s["track"] = None                    # deleted by hand: a new one for the next device
+            if s["job"] is not None:
+                self._scan_got(s["job"]["key"], None)
+                s["job"] = None
+        job = s["job"]
+        if job is None:
+            if not s["todo"]:
+                return self._scan_finish()
+            key = s["todo"].pop(0)
+            tr = s["track"] or self._scan_track()
+            for i in reversed(range(len(tr.devices))):     # leftovers of a device that timed out
+                tr.delete_device(i)
+            app = Live.Application.get_application()
+            song.view.selected_track = tr
+            try:
+                app.browser.hotswap_target = None
+            except Exception:
+                pass
+            s["job"] = {"key": key, "ticks": 0, "count": -1, "stable": 0}
+            try:
+                app.browser.load_item(s["found"][key]["item"])
+            except Exception as e:
+                self.log_message("EventFXHelper: fxscan: can't load %s: %s" % (key, e))
+                self._scan_got(key, None)
+                s["job"] = None
+            return
+        job["ticks"] += 1
+        tr = s["track"]
+        devs = list(tr.devices)
+        if devs:
+            n = len(devs[0].parameters)
+            if n == job["count"]:
+                job["stable"] += 1
+            else:
+                job["count"], job["stable"] = n, 0
+            if job["stable"] >= SCAN_STABLE_TICKS[s["found"][job["key"]]["kind"]] or job["ticks"] > SCAN_TIMEOUT_TICKS:
+                dev = devs[0]
+                params = [[p.name, p.min, p.max, 1 if p.is_quantized else 0] for p in dev.parameters]
+                self._scan_got(job["key"], {"device": dev.name, "cls": dev.class_name, "params": params})
+                for i in reversed(range(len(devs))):
+                    tr.delete_device(i)
+                s["job"] = None
+            return
+        if job["ticks"] > SCAN_TIMEOUT_TICKS:
+            self._scan_got(job["key"], None)
+            s["job"] = None
+
+    def _scan_got(self, key, result):
+        s = self._scan
+        for k in s["same"].get(key, [key]):
+            s["results"][k] = result if result is not None else {"failed": True}
+        s["done"] += 1
+        if result is None:
+            s["failed"] += 1
+        if time.time() - s["t_say"] > 20:
+            s["t_say"] = time.time()
+            self._scan_say("%d / %d loaded" % (s["done"], s["total"]))
+
+    def _scan_finish(self):
+        s = self._scan
+        song = self.song()
+        if s["track"] is not None and self._scan_track_alive():
+            try:
+                idx = next(i for i, t in enumerate(song.tracks) if t._live_ptr == s["track"]._live_ptr)
+                song.delete_track(idx)
+            except Exception as e:
+                self.log_message("EventFXHelper: fxscan: can't delete the temporary track: %s" % e)
+        if s["sel"] is not None:
+            try:
+                song.view.selected_track = s["sel"]
+            except Exception:
+                pass
+        items = {}
+        for key, e in s["found"].items():
+            it = {"name": e["name"], "kind": e["kind"], "class": e["class"], "source": e["source"]}
+            if e["kind"] in FX_LOADED:
+                r = s["results"].get(key)
+                o = s["old"].get(key, {})
+                if r is None:                    # not loaded this time: keep what the catalog had
+                    r = {k: o[k] for k in ("device", "cls", "params", "failed") if k in o}
+                it.update(r)
+            items[key] = it
+        n_loaded = sum(1 for it in items.values() if it.get("params") is not None)
+        n_presets = sum(1 for it in items.values() if it["kind"] == "preset")
+        n_failed = sum(1 for it in items.values() if it.get("failed"))
+        text = "%d devices and racks, %d presets in the catalog%s%s (%.0f s)" % (
+            n_loaded, n_presets, (", %d could not be loaded" % n_failed) if n_failed else "",
+            " - stopped early, fxscan loads the rest" if s.get("stopped") else "", time.time() - s["t0"])
+        try:
+            self._write_catalog({"version": 1, "written": time.strftime("%Y-%m-%d %H:%M:%S"), "items": items})
+        except Exception as e:
+            if not s["auto"]:
+                self._to_tidal_fx("fxscan: can't write %s: %s" % (FX_CATALOG, e), end=True)
+            self._scan = None
+            return
+        auto = s["auto"]
+        self._scan = None
+        self.log_message("EventFXHelper: fxscan: " + text)
+        self._cat_wait = {"t": time.time(), "auto": auto, "text": text}
+        self._reply("/catalog", len(items))      # EventFX rewrites toolz-fx.tidal -> /catalogdone
+        if auto:
+            self._instlist(quiet=True)
+
+    def _catalog_done(self, ok, names):
+        w, self._cat_wait = self._cat_wait, None
+        if w is None:
+            return                               # a second EventFX answering: already reported
+        if ok:
+            text = "%s; toolz-fx.tidal has %d catalog names - reload: :CheckTidal" % (w["text"], names)
+        else:
+            text = "%s; EventFX could not write toolz-fx.tidal" % w["text"]
+        self._reply("/status", "fxscan: " + text)
+        if not w["auto"]:
+            self._to_tidal_fx("fxscan: done - " + text, end=True)
+
     def _reccal(self, ch):
         if self._cals:                      # not to Tidal: its waiting reccal would take this as its result
             return self._reply("/error", "reccal: a calibration is still running - wait for its result")
@@ -780,6 +1123,13 @@ class EventFXHelper(ControlSurface):
             self._tick_insts()
         if self._listing is not None:
             self._tick_listing()
+        if self._scan is not None:
+            self._tick_scan()
+        if self._cat_wait is not None and time.time() - self._cat_wait["t"] > 15:
+            w, self._cat_wait = self._cat_wait, None
+            if not w["auto"]:
+                self._to_tidal_fx("fxscan: %s - no EventFX answered, toolz-fx.tidal not rewritten "
+                                  "(open a set with EventFX, then click update)" % w["text"], end=True)
         if self._cals:
             self._tick_cals()
         if self._job is not None:

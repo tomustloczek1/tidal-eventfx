@@ -1,0 +1,77 @@
+-- 07-fx.tidal : the effect catalog - names for every audio effect in Live's browser
+-- (loaded from f/ by load-functions.tidal; needs helperSend / oscText / say from 05-helper)
+--
+--   fxscan       -- the first time: loads every audio effect for a moment (a few minutes, Live
+--                   shows a temporary track at the end of the set); later: only what is new
+--   fxscanAll    -- every device loaded again (e.g. after a Live update changed parameters)
+--   fxscanStop   -- stop after the device being loaded; what was read so far is kept, the
+--                   next fxscan loads the rest
+--
+-- EventFXHelper writes ~/.config/tidal/fx-catalog.json, EventFX turns it into names in
+-- toolz-fx.tidal: every parameter of native effects, Max for Live effects and your own presets /
+-- racks (saturatorDrive, shifterPitchFine, ...), only the main one for the Core Library's presets
+-- (warmTube = its Dry/Wet). Tab completes them. A name only does something on a track whose
+-- palette has that effect (until mapping on demand comes); elsewhere it is ignored, as before.
+-- After each update / refill in Live the helper adds what is new in the browser by itself.
+--
+-- Mapping on demand: a name gets its CC on a track the first time a pattern uses it there
+-- (toMidi asks, see fxWant in toolz.tidal). The answers are printed here as they come:
+--   fx: track 1: saturatorDrive -> CC 12 (with saturator)
+--   fx: track 1: no Erosion in chain 1 - add it there and click update (erosion is Erosion's)
+
+import qualified Sound.Osc.Fd as O
+import qualified Sound.Osc.Transport.Fd.Udp as U
+import Control.Concurrent (forkIO)
+import Control.Exception (try, SomeException)
+import System.Timeout (timeout)
+
+:{
+fxscanWith :: String -> IO ()
+fxscanWith mode = do
+  _ <- forkIO $ do
+    r <- try $ O.withTransport (U.udpServer "127.0.0.1" 11014) $ \t -> do
+      helperSend "/fxscan" [O.string mode]
+      let wait first = do
+            -- the first answer comes at once; later ones at least every 20 s while it loads
+            m <- timeout (if first then 10000000 else 300000000) (O.recvMessage t)
+            case m of
+              Nothing -> say (if first then "fxscan: no answer from EventFXHelper (helper 14 running? Live open?)"
+                                       else "fxscan: no word from EventFXHelper for 5 min - stopped waiting")
+              Just Nothing -> wait first
+              Just (Just msg) -> do
+                say (unwords (map oscText (O.messageDatum msg)))
+                if O.messageAddress msg == "/fxscanend" then return () else wait False
+      wait True
+    case r of
+      Left e  -> say ("fxscan: " ++ show (e :: SomeException) ++ " (another fxscan still waiting?)")
+      Right _ -> return ()
+  return ()
+
+fxscan, fxscanAll, fxscanStop :: IO ()
+fxscan = fxscanWith "new"
+fxscanAll = fxscanWith "all"
+-- the fxscan that is running prints the end (its listener gets the last message)
+fxscanStop = helperSend "/fxscan" [O.string "stop"] >> say "fxscan: stopping after the current device..."
+:}
+
+:{
+-- prints EventFX's answers to mapping requests (UDP 11015) for the whole session; loading this
+-- file again starts no second listener (the port is taken: the first one stays)
+fxListen :: IO ()
+fxListen = do
+  _ <- forkIO $ do
+    r <- try $ O.withTransport (U.udpServer "127.0.0.1" 11015) $ \t -> do
+      let loop = do
+            m <- O.recvMessage t
+            case fmap O.messageDatum m of
+              Just (_ : rest) -> say ("fx: " ++ unwords (map oscText rest))
+              _               -> return ()
+            loop
+      loop
+    case r of
+      Left e  -> const (return ()) (e :: SomeException)
+      Right _ -> return ()
+  return ()
+:}
+
+fxListen

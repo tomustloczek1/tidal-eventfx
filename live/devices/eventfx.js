@@ -9,10 +9,14 @@
 // Inputs (from the main patch):
 //   init / reload     - read this track's palette from the set, find the params in all chains,
 //                       rewrite toolz-fx.tidal from every EventFX of the open set
-//   update            - scan rack chain 1 + the effects on the track: new params get a free CC,
+//   update            - scan rack chain 1 + the effects on the track: every param gets a name
+//                       (after the rack: "~name", static (...) in Tidal), params with a CC keep it,
 //                       removed ones keep theirs (old clips) until the pool is full - then the
 //                       one unused longest gives its CC away; stores the palette in the set,
 //                       writes toolz-fx.tidal, reloads, then mirrors chain 1 into all other chains
+//   helper /fxwant <ch> <name>  - mapping on demand: a pattern used a name that has no CC on
+//                       this track: map it (+ the amount of its device), store, rewrite
+//                       toolz-fx.tidal, rebuild; answer /wanted <ch> <ok> <text> (to Tidal)
 //   importold         - once per set made before v2: this track's CCs from fx-library.json
 //   rest              - current knob positions (chain 1 / track) become the resting values
 //   neutral           - every mapped param in every chain back to its resting value
@@ -25,6 +29,12 @@
 //   note <pitch> <vel> - every note on / off ([notein] -> [pack 0 0] -> [prepend note])
 //   browse 0|1        - 1: no rotation, every note plays in rack chain 1 (auditioning presets
 //                       there); afterwards click update so the mirror copies the result
+//   helper /catalog   - EventFXHelper finished fxscan: the EventFX that gets it rewrites
+//                       toolz-fx.tidal with the catalog names and answers /catalogdone
+// toolz-fx.tidal also lists every effect of fx-catalog.json (fxscan in Tidal) as names without
+// a CC; after each successful update / refill EventFX asks the helper for "/fxscan auto" (only
+// what is new in Live's browser). Names that Tidal or your own files already have
+// (tidal-names.txt from gen_words.py) get an "A": an effect never hides a Tidal function.
 //
 // Behaviour:
 //   CC 119 (value marker)  -> pick the next rack chain, put the params used by that chain's
@@ -88,9 +98,13 @@ function findHome() {
         LIB_FILE = TIDAL_DIR + "fx-library.json";      // FX library: names, CC + resting values per track
         RULES_FILE = TIDAL_DIR + "fx-rules.json";      // which params a device exposes (optional)
         TIDAL_FILE = TIDAL_DIR + "toolz-fx.tidal";     // written by update
+        CAT_FILE = TIDAL_DIR + "fx-catalog.json";      // every audio effect's params (EventFXHelper: fxscan)
+        CAT_TIDAL_FILE = TIDAL_DIR + "toolz-fx-catalog.tidal";   // their names (loaded by load-functions)
+        NAMES_FILE = TIDAL_DIR + "tidal-names.txt";    // names Tidal already has (gen_words.py): FX names avoid them
     }
     return HOME;
 }
+var CAT_FILE = "", NAMES_FILE = "", CAT_TIDAL_FILE = "";
 
 function noHome(what) {
     say(what + ": can't find ~/.config/tidal (device path: \"" + devicePath + "\")");
@@ -314,6 +328,12 @@ function writeText(path, s) {
     return true;
 }
 
+// write only when the text is different: Neovim reloads the file in Tidal whenever it changes
+function writeIfChanged(path, s) {
+    if (readText(path) === s) { return true; }
+    return writeText(path, s);
+}
+
 // null = no file, undefined = broken file (already reported)
 function readJson(path) {
     var s = readText(path);
@@ -373,11 +393,25 @@ var DEFAULT_RULES = {
         "fxCC fxOn").split(" ")
 };
 
+// Haskell keywords: never usable as names
+var HASKELL_WORDS = ("case class data default deriving do else foreign if import in infix infixl infixr " +
+                     "instance let module newtype of then type where forall mdo rec proc").split(" ");
+
 function readRules() {
-    var r = {}, k;
+    var r = {}, k, i;
     for (k in DEFAULT_RULES) { r[k] = DEFAULT_RULES[k]; }
     var user = readJson(RULES_FILE);
     if (user) { for (k in user) { if (k.charAt(0) !== "_") { r[k] = user[k]; } } }
+    // FX names that would hide a Tidal function / param or one of your own functions get an "A"
+    // (delay -> delayA): rules.reserved + Haskell keywords + every name in tidal-names.txt
+    r.reservedSet = {};
+    var lists = [r.reserved || [], HASKELL_WORDS];
+    for (k = 0; k < lists.length; k++) { for (i = 0; i < lists[k].length; i++) { r.reservedSet[lists[k][i]] = true; } }
+    var names = NAMES_FILE ? readText(NAMES_FILE) : null;
+    if (names) {
+        var ws = names.split(/\s+/);
+        for (i = 0; i < ws.length; i++) { if (ws[i]) { r.reservedSet[ws[i]] = true; } }
+    }
     return r;
 }
 
@@ -405,6 +439,9 @@ function camel(s) {
 function str(v) { return trim((v instanceof Array) ? v.join(" ") : v); }
 
 // ---- palette scan (chain 1 of the rack + effects on the track) -------------------
+// Every param of every device gets a name; a CC only once a pattern uses that name (mapping on
+// demand: toMidi asks EventFX through the helper, see wantParams). Devices after the rack (the
+// whole track) have names starting with "~": in Tidal, static (...) puts that "~" in front.
 function chooseParams(dev, rules) {
     var n = go(dev.path).getcount("parameters"), pars = [], counts = {}, i;
     for (i = 0; i < n; i++) {
@@ -421,30 +458,19 @@ function chooseParams(dev, rules) {
     var primary = rule(rules.primaryByDevice, dev), ip = primary ? find(primary) : -1;
     for (i = 0; ip < 0 && i < rules.primaryCandidates.length; i++) { ip = find(rules.primaryCandidates[i]); }
     var auto = rule(rules.autoOn, dev), ia = auto ? find(auto) : -1;
-    var prefer = rule(rules.preferByDevice, dev) || [];
-
-    var cand = [];
-    for (i = 0; i < n; i++) {
-        var q = pars[i];
-        if (i === ip || i === ia || has(rules.skipParams, q.name)) { continue; }
-        var pi = -1;
-        for (var j = 0; j < prefer.length; j++) { if (prefer[j] === q.name) { pi = j; break; } }
-        if (rules.skipQuantized && q.quantized && pi < 0) { continue; }   // stepped: only when asked for
-        var group = pi >= 0 ? 0 : (has(rules.always, q.name) ? 1 : 2);
-        cand.push({ par: q, key: group * 100000 + (pi >= 0 ? pi : 0) * 1000 + i });
-    }
-    cand.sort(function (a, b) { return a.key - b.key; });
 
     var chosen = [];
-    if (ip >= 0) { chosen.push({ par: pars[ip], role: "primary" }); }
-    if (ia >= 0) { chosen.push({ par: pars[ia], role: "auto" }); }
-    var limit = dev.tier === "chain" ? rules.maxChain : rules.maxTrack;
-    for (i = 0; i < cand.length && chosen.length < limit; i++) {      // the auto-on param counts too
-        chosen.push({ par: cand[i].par, role: "param" });
+    for (i = 0; i < n; i++) {
+        var q = pars[i];
+        if (i === ip) { chosen.push({ par: q, role: "primary" }); }
+        else if (i === ia) { chosen.push({ par: q, role: "auto" }); }
+        else if (!has(rules.skipParams, q.name) && !CAT_SKIP_PARAM.test(q.name)) { chosen.push({ par: q, role: "param" }); }
     }
-    chosen.sort(function (a, b) { return a.par.index - b.par.index; });
     return { chosen: chosen, noPrimary: ip < 0 };
 }
+
+// device of an entry, by where it is: the same device name may be in the chain and after the rack
+function devKey(e) { return (e.tier === "track" ? "track|" : "chain|") + e.device; }
 
 // -> { entries: [...] } or { error: "..." }
 function scanPalette(rules) {
@@ -472,28 +498,33 @@ function scanPalette(rules) {
 
     var seenDev = {};
     for (d = 0; d < devs.length; d++) {
-        if (seenDev[devs[d].name]) {
-            return { error: "two devices named \"" + devs[d].name + "\" - rename one (Cmd+R)" };
+        var dk = devs[d].tier + "|" + devs[d].name;
+        if (seenDev[dk]) {
+            return { error: "two devices named \"" + devs[d].name + "\" " + (devs[d].tier === "chain" ? "in chain 1" : "after the rack") +
+                            " - rename one (Cmd+R)" };
         }
-        seenDev[devs[d].name] = true;
+        seenDev[dk] = true;
     }
 
     var entries = [], names = {}, noPrimary = [];
     for (d = 0; d < devs.length; d++) {
         var dv = devs[d], ch = chooseParams(dv, rules), primaryName = null, pending = [];
+        var mark = dv.tier === "track" ? "~" : "";
         if (ch.noPrimary) { noPrimary.push(dv.name); }
         for (var i = 0; i < ch.chosen.length; i++) {
             var c = ch.chosen[i], pp = dv.path + " parameters " + c.par.index;
             go(pp);
             var e = { role: c.role, device: dv.name, param: c.par.name, occurrence: c.par.occ,
-                      key: dv.name + "/" + c.par.label, tier: dv.tier, order: d,
+                      key: mark + dv.name + "/" + c.par.label, tier: dv.tier, order: d,
                       min: num(api.get("min")), max: num(api.get("max")), value: num(api.get("value")),
                       quantized: c.par.quantized, alwaysOn: has(rules.alwaysOn, dv.name), tidal: null };
             if (c.role === "auto") {
                 e.rest = e.min;
             } else {
                 var t = c.role === "primary" ? camel(dv.name) : camel(dv.name + " " + c.par.label);
-                if (has(rules.reserved, t)) { t += "A"; }
+                if (!/^[a-z][A-Za-z0-9]*$/.test(t)) { continue; }        // nothing to call it
+                if (rules.reservedSet.hasOwnProperty(t)) { t += "A"; }
+                t = mark + t;
                 if (names[t]) { return { error: "\"" + t + "\" comes from " + e.key + " and " + names[t] + " - rename a device" }; }
                 names[t] = e.key;
                 e.tidal = t;
@@ -630,6 +661,12 @@ function setLibrary() {
                 lib.params[n] = { device: fx[n].device, param: fx[n].param, occurrence: fx[n].occurrence || 0 };
             }
         }
+        var kn = lib.tracks[t].known || [];             // named only (no CC until a pattern uses it)
+        for (var q = 0; q < kn.length; q++) {
+            if (!lib.params[kn[q].tidal]) {
+                lib.params[kn[q].tidal] = { device: kn[q].device, param: kn[q].param, occurrence: kn[q].occurrence || 0 };
+            }
+        }
     }
     return lib;
 }
@@ -727,12 +764,16 @@ function position(rest, lo, hi) {
 }
 
 // merge a palette scan into the library entry of this track -> report, or { error }
-function mergeTrack(lib, ch, entries) {
+// Params that already have a CC keep it; a new CC only for the names in `wanted` (mapping on
+// demand); every other param of the track is only named (tr.known: in toolz-fx, no CC yet).
+// A CC of a param whose device is gone stays (old clips) until the pool is full.
+function mergeTrack(lib, ch, entries, wanted) {
+    wanted = wanted || {};
     var key = String(ch);
     var tr = lib.tracks[key] || (lib.tracks[key] = { fx: {}, on: [] });
-    var used = {}, seen = {}, oldOn = {}, added = [], reclaimed = [], warn = [], name, i, t = now();
+    var used = {}, present = {}, oldOn = {}, added = [], reclaimed = [], warn = [], name, i, t = now();
     for (name in tr.fx) { used[tr.fx[name].cc] = true; tr.fx[name].inPalette = false; }
-    for (i = 0; i < entries.length; i++) { if (entries[i].tidal) { seen[entries[i].tidal] = true; } }   // never reclaimed
+    for (i = 0; i < entries.length; i++) { if (entries[i].tidal) { present[entries[i].tidal] = true; } }   // never reclaimed
     for (i = 0; i < tr.on.length; i++) { used[tr.on[i].cc] = true; oldOn[tr.on[i].key || (tr.on[i].device + "/" + tr.on[i].param)] = tr.on[i]; }
 
     function alloc() {
@@ -740,7 +781,7 @@ function mergeTrack(lib, ch, entries) {
         var best = null;                  // pool full: take the CC of the param unused longest
         for (var n in tr.fx) {
             var f = tr.fx[n];
-            if (f.inPalette === false && !seen[n] && (best === null || (f.lastSeen || 0) < (tr.fx[best].lastSeen || 0))) { best = n; }
+            if (f.inPalette === false && !present[n] && (best === null || (f.lastSeen || 0) < (tr.fx[best].lastSeen || 0))) { best = n; }
         }
         if (best === null) { return 0; }
         var cc = tr.fx[best].cc;
@@ -749,20 +790,19 @@ function mergeTrack(lib, ch, entries) {
         return cc;
     }
 
-    var on = [];
+    var mappedDev = {}, known = [], e, f;
     for (i = 0; i < entries.length; i++) {
-        var e = entries[i];
-        if (e.role === "auto") {
-            var o = oldOn[e.key], occ = o ? o.cc : alloc();
-            if (!occ) { return { error: "CC pool of track " + ch + " is full" }; }
-            on.push({ "with": e["with"], key: e.key, cc: occ, value: 1, device: e.device, param: e.param,
-                      occurrence: e.occurrence, order: e.order, min: e.min, max: e.max, alwaysOn: e.alwaysOn });
+        e = entries[i];
+        if (e.role === "auto") { continue; }
+        f = tr.fx[e.tidal];
+        if (!f && !wanted[e.tidal]) {
+            known.push({ tidal: e.tidal, device: e.device, param: e.param, occurrence: e.occurrence,
+                         tier: e.tier, order: e.order, primary: e.role === "primary" });
             continue;
         }
-        var f = tr.fx[e.tidal];
         if (!f) {
             var cc = alloc();
-            if (!cc) { return { error: "CC pool of track " + ch + " is full" }; }
+            if (!cc) { return { error: "the CC pool of track " + ch + " is full" }; }
             f = tr.fx[e.tidal] = { cc: cc, rest: e.rest };
             added.push(e.tidal + " (CC " + cc + ")");
         } else {
@@ -772,6 +812,7 @@ function mergeTrack(lib, ch, entries) {
         f.device = e.device; f.param = e.param; f.occurrence = e.occurrence; f.tier = e.tier;
         f.order = e.order; f.primary = e.role === "primary"; f.min = e.min; f.max = e.max;
         f.quantized = e.quantized; f.alwaysOn = e.alwaysOn; f.inPalette = true; f.lastSeen = t;
+        mappedDev[devKey(e)] = true;
 
         var lp = lib.params[e.tidal];
         if (!lp) {
@@ -780,21 +821,32 @@ function mergeTrack(lib, ch, entries) {
             warn.push(e.tidal + " is " + lp.device + "/" + lp.param + " elsewhere");
         }
     }
+
+    var on = [];                          // auto-on params (BPF Dry/Wet...) of devices that have a CC
+    for (i = 0; i < entries.length; i++) {
+        e = entries[i];
+        if (e.role !== "auto" || !mappedDev[devKey(e)]) { continue; }
+        var o = oldOn[e.key], occ = o ? o.cc : alloc();
+        if (!occ) { return { error: "the CC pool of track " + ch + " is full" }; }
+        on.push({ "with": e["with"], key: e.key, cc: occ, value: 1, device: e.device, param: e.param, tier: e.tier,
+                  occurrence: e.occurrence, order: e.order, min: e.min, max: e.max, alwaysOn: e.alwaysOn });
+    }
     // engage: using any param of a device also sets its amount (primary Dry/Wet...) and its
     // auto-on param, unless the pattern sets that one itself (Tidal skips explicit CCs)
     var byDev = {}, engage = {}, d;
     for (i = 0; i < entries.length; i++) {
         var en = entries[i];
-        d = en.device;
+        d = devKey(en);
         if (!byDev[d]) { byDev[d] = []; engage[d] = []; }
-        if (en.tidal) { byDev[d].push(en); }
+        if (en.tidal && tr.fx[en.tidal] && tr.fx[en.tidal].inPalette) { byDev[d].push(en); }
         if (en.role === "primary" && en.engage && tr.fx[en.tidal]) {
             engage[d].push({ name: en.tidal, key: en.key, cc: tr.fx[en.tidal].cc, value: en.onValue, e: en });
         }
     }
-    for (i = 0; i < on.length; i++) {                     // auto-on params (BPF Dry/Wet...)
-        engage[on[i].device] = engage[on[i].device] || [];
-        engage[on[i].device].push({ name: null, key: on[i].key, cc: on[i].cc, value: on[i].value, e: on[i] });
+    for (i = 0; i < on.length; i++) {
+        d = devKey(on[i]);
+        engage[d] = engage[d] || [];
+        engage[d].push({ name: null, key: on[i].key, cc: on[i].cc, value: on[i].value, e: on[i] });
     }
     var on2 = [];
     for (d in byDev) {
@@ -804,15 +856,33 @@ function mergeTrack(lib, ch, entries) {
                 var en2 = engage[d][g];
                 if (en2.name === nm) { continue; }            // the amount itself: nothing to add
                 on2.push({ "with": nm, key: en2.key, cc: en2.cc, value: Math.round(en2.value * 1000) / 1000,
-                           device: en2.e.device, param: en2.e.param, occurrence: en2.e.occurrence,
+                           device: en2.e.device, param: en2.e.param, occurrence: en2.e.occurrence, tier: en2.e.tier,
                            order: en2.e.order, min: en2.e.min, max: en2.e.max, alwaysOn: en2.e.alwaysOn });
             }
         }
     }
     tr.on = on2;
+    tr.known = known;
     var dormant = [];
     for (name in tr.fx) { if (tr.fx[name].inPalette === false) { dormant.push(name); } }
-    return { added: added, reclaimed: reclaimed, dormant: dormant, warn: warn };
+    var mapped = 0;
+    for (name in tr.fx) { if (tr.fx[name].inPalette) { mapped++; } }
+    return { added: added, reclaimed: reclaimed, dormant: dormant, warn: warn, known: known.length, mapped: mapped };
+}
+
+// what to map when a pattern uses these names: the names, plus the amount (Dry/Wet...) of
+// their devices - any param of a device turns its amount up (engage), so it needs a CC too
+function wantClosure(entries, names, tr) {
+    var w = {}, devs = {}, i, e;
+    for (i = 0; i < entries.length; i++) {
+        e = entries[i];
+        if (e.tidal && names[e.tidal]) { w[e.tidal] = true; devs[devKey(e)] = true; }
+    }
+    for (i = 0; i < entries.length; i++) {
+        e = entries[i];
+        if (e.role === "primary" && e.engage && devs[devKey(e)] && !tr.fx[e.tidal]) { w[e.tidal] = true; }
+    }
+    return w;
 }
 
 // map entries for the engine, from the library entry of this track (null = none)
@@ -827,7 +897,7 @@ function libraryEntries(lib, ch, rules) {
         var dev = f.device || lp.device, par = f.param || lp.param;
         var occ = f.occurrence !== undefined ? f.occurrence : (lp.occurrence || 0);
         var aOn = f.alwaysOn !== undefined ? f.alwaysOn : (f.always_on !== undefined ? f.always_on : has(rules.alwaysOn, dev));
-        out.push({ cc: f.cc, device: dev, param: par, occurrence: occ, min: f.min, max: f.max,
+        out.push({ cc: f.cc, device: dev, param: par, occurrence: occ, min: f.min, max: f.max, tier: f.tier,
                    neutral: position(restOf(f), f.min, f.max), always_on: aOn, key: dev + "/" + par, tidal: name });
     }
     var mapped = {};
@@ -837,11 +907,119 @@ function libraryEntries(lib, ch, rules) {
         if (mapped[o.cc]) { continue; }                   // an amount that also has its own name
         mapped[o.cc] = true;
         out.push({ cc: o.cc, device: o.device, param: o.param, occurrence: o.occurrence || 0,
-                   min: o.min, max: o.max, neutral: 0,
+                   min: o.min, max: o.max, neutral: 0, tier: o.tier,
                    always_on: o.alwaysOn !== undefined ? o.alwaysOn : has(rules.alwaysOn, o.device),
                    key: o.device + "/" + o.param, tidal: null });
     }
     return out;
+}
+
+// ---- effect catalog (fx-catalog.json, written by EventFXHelper: fxscan) ----------------
+// items: browser path -> { name, kind: native|m4l|rack|preset, class, source: core|user,
+//                          device, params: [[name, min, max, quantized], ...] (loaded ones) }
+// Presets are not loaded: they have the params of their class (the native device they're for).
+var CAT_CACHE = new Global("eventfx_catalog");   // parsed file, shared by every EventFX
+var lastCatalogCount = 0;                         // names the last writeTidal took from the catalog
+var CAT_SKIP_PARAM = /^(Macro \d+|Chain Selector)$/;   // unnamed rack macros: nothing to call them
+var CAT_RANK = { native: 0, m4l: 1, rack: 2, preset: 2 };
+
+function readCatalog() {
+    if (!CAT_FILE) { return null; }
+    var s = readText(CAT_FILE);
+    if (s === null) { return null; }
+    if (CAT_CACHE.len === s.length && CAT_CACHE.data) { return CAT_CACHE.data; }
+    var c;
+    try { c = JSON.parse(s); } catch (err) { say("fx-catalog.json is broken - run fxscan in Tidal again"); return null; }
+    CAT_CACHE.len = s.length;
+    CAT_CACHE.data = c;
+    return c;
+}
+
+// names for the params of one device, by the same scheme as scanPalette: the main param gets the
+// device's name (saturator), every other one device name + param label (saturatorDrive);
+// full = false: the main param only (presets / racks from the Core Library)
+function nameAll(dev, pars, rules, full) {
+    var n = pars.length, counts = {}, occ = [], i, out = [];
+    for (i = 0; i < n; i++) { occ.push(counts[pars[i][0]] || 0); counts[pars[i][0]] = (counts[pars[i][0]] || 0) + 1; }
+    function find(name) { for (var j = 0; j < n; j++) { if (pars[j][0] === name) { return j; } } return -1; }
+    var primary = rule(rules.primaryByDevice, dev), ip = primary ? find(primary) : -1;
+    for (i = 0; ip < 0 && i < rules.primaryCandidates.length; i++) { ip = find(rules.primaryCandidates[i]); }
+    for (i = 0; i < n; i++) {
+        var pn = pars[i][0];
+        if (i !== ip && (!full || has(rules.skipParams, pn) || CAT_SKIP_PARAM.test(pn))) { continue; }
+        var label = counts[pn] === 1 ? pn : pn + " " + (occ[i] + 1);
+        var t = i === ip ? camel(dev.name) : camel(dev.name + " " + label);
+        if (!/^[a-z][A-Za-z0-9]*$/.test(t)) { continue; }
+        if (rules.reservedSet.hasOwnProperty(t)) { t += "A"; }
+        out.push({ tidal: t, label: i === ip ? label + " (main)" : label });
+    }
+    return out;
+}
+
+// lines for every catalog name -> { lines: [...], count }. Order: native devices, Max for Live,
+// your presets / racks, then the Core Library's; a name that comes up twice keeps the first one.
+// Names that are in a palette too are written in both files (the same pF), so this file only
+// changes after an fxscan - reloading it (2000+ names) holds GHCi up for a moment.
+function catalogLines(rules) {
+    var cat = readCatalog(), out = [], count = 0, key, i, j;
+    if (!cat || !cat.items) { return { lines: out, count: 0, byName: {} }; }
+    var items = [], classes = {};
+    for (key in cat.items) {
+        var it = cat.items[key];
+        if (it.kind === "native" && it.params) { classes[it.name] = it.params; }
+        if (CAT_RANK[it.kind] !== undefined) { items.push(it); }
+    }
+    function rank(it) { return CAT_RANK[it.kind] + (it.kind !== "native" && it.kind !== "m4l" && it.source !== "user" ? 1 : 0); }
+    items.sort(function (a, b) {
+        var ra = rank(a), rb = rank(b);
+        if (ra !== rb) { return ra - rb; }
+        var na = String(a.device || a.name).toLowerCase(), nb = String(b.device || b.name).toLowerCase();
+        return na < nb ? -1 : na > nb ? 1 : 0;
+    });
+    var used = {}, rows = [], w = 10, byName = {};
+    for (i = 0; i < items.length; i++) {
+        var e = items[i], dname = String(e.device || e.name);
+        var disp = e.kind === "preset" ? e["class"] : (e.kind === "rack" ? "Audio Effect Rack" : dname);
+        var pars = e.kind === "preset" ? classes[e["class"]] : e.params;
+        if (!pars || has(rules.skipDevices, dname) || has(rules.skipDevices, disp)) { continue; }
+        var full = e.kind === "native" || e.kind === "m4l" || e.source === "user";
+        var named = nameAll({ name: dname, disp: disp }, pars, rules, full), mine = [];
+        for (j = 0; j < named.length; j++) {
+            var t = named[j].tidal;
+            if (used.hasOwnProperty(t)) { continue; }
+            used[t] = true;
+            byName[t] = dname;
+            mine.push(named[j]);
+            if (t.length + 1 > w) { w = t.length + 1; }
+        }
+        if (mine.length) { rows.push({ device: dname, names: mine }); }
+    }
+    for (i = 0; i < rows.length; i++) {
+        out.push("-- " + rows[i].device);
+        for (j = 0; j < rows[i].names.length; j++) {
+            var r = rows[i].names[j];
+            out.push(pad(r.tidal, w) + "= pF \"" + r.tidal + "\"   -- " + r.label + "  [catalog]");
+            count++;
+        }
+    }
+    return { lines: out, count: count, byName: byName };
+}
+
+// device of a catalog name (catalogLines' rows), or null
+function catalogDeviceOf(name) {
+    var cat = catalogLines(readRules());
+    return cat.byName.hasOwnProperty(name) ? cat.byName[name] : null;
+}
+
+// /catalog from EventFXHelper (fxscan finished): the EventFX that gets it rewrites toolz-fx.tidal
+// and answers. Which [udpreceive 11011] gets a message is up to Max (maybe only one of them), so
+// any EventFX may do it; when several get it, the first one within 3 s does.
+function catalogReady() {
+    if (!findHome() || !apiReady()) { return; }
+    if (CAT_CACHE.wroteAt && now() - CAT_CACHE.wroteAt < 3000) { return; }
+    CAT_CACHE.wroteAt = now();
+    var ok = writeTidal(setLibrary());
+    outlet(1, "/catalogdone", ok ? 1 : 0, lastCatalogCount);
 }
 
 // ---- toolz-fx.tidal ------------------------------------------------------------
@@ -852,12 +1030,19 @@ function writeTidal(lib) {
     for (t in lib.tracks) { tracks.push(Number(t)); }
     tracks.sort(function (a, b) { return a - b; });
 
-    var order = {}, w = 10, names = [];
+    var order = {}, w = 10, names = [], knownOf = {};
     for (i = 0; i < tracks.length; i++) {
-        var fx = lib.tracks[tracks[i]].fx;
+        var fx = lib.tracks[tracks[i]].fx, kn = lib.tracks[tracks[i]].known || [];
+        knownOf[tracks[i]] = {};
         for (name in fx) {
             if (fx[name].inPalette !== false && order[name] === undefined) {
                 order[name] = tracks[i] * 1000 + (fx[name].order || 0) * 2 + (fx[name].primary ? 0 : 1);
+            }
+        }
+        for (j = 0; j < kn.length; j++) {
+            knownOf[tracks[i]][kn[j].tidal] = true;
+            if (order[kn[j].tidal] === undefined) {
+                order[kn[j].tidal] = tracks[i] * 1000 + (kn[j].order || 0) * 2 + (kn[j].primary ? 0 : 1);
             }
         }
     }
@@ -871,35 +1056,56 @@ function writeTidal(lib) {
 
     var counts = [];
     for (i = 0; i < tracks.length; i++) {
-        var nIn = 0, fxs = lib.tracks[tracks[i]].fx;
+        var nIn = 0, fxs = lib.tracks[tracks[i]].fx, nKn = (lib.tracks[tracks[i]].known || []).length;
         for (name in fxs) { if (fxs[name].inPalette !== false) { nIn++; } }
-        counts.push("t" + tracks[i] + (lib.names && lib.names[tracks[i]] ? " \"" + lib.names[tracks[i]] + "\"" : "") + ": " + nIn);
+        counts.push("t" + tracks[i] + (lib.names && lib.names[tracks[i]] ? " \"" + lib.names[tracks[i]] + "\"" : "") +
+                    ": " + nIn + " with a CC, " + nKn + " more on first use");
     }
+    var cat = catalogLines(readRules());
+    lastCatalogCount = cat.count;
+    var catText = ["-- toolz-fx-catalog.tidal - GENERATED by EventFX from fx-catalog.json (fxscan in Tidal), do not edit",
+                   "-- every audio effect in Live's browser: names only - a track ignores a name until the",
+                   "-- effect is in its palette (toolz-fx.tidal has the CCs). Loaded by load-functions.tidal.",
+                   ":{"].concat(cat.lines, [":}", ""]).join("\n");
+    if (cat.count && !writeIfChanged(CAT_TIDAL_FILE, catText)) { return false; }
     var out = ["-- toolz-fx.tidal - GENERATED by EventFX from the open Live set, do not edit",
-               "-- (rewritten when a set opens and on update - reload in Tidal: :CheckTidal)",
-               "-- " + names.length + " FX params in this set; in the palettes: " + counts.join(", "),
+               "-- (rewritten when a set opens and on update; Neovim reloads it in Tidal by itself)",
+               "-- " + names.length + " FX params in this set; in the palettes: " + counts.join(", ") +
+               "; " + cat.count + " names in toolz-fx-catalog.tidal",
                "-- usage: d1 $ toMidi 1 $ n \"0 3\" # redux \"0 1\" # lpfA 0.4   (1 = track / MIDI channel)",
-               "-- a param that is not in the track's palette is ignored on that track", ""];
-    var last = null;
+               "--        # static (utilityGain 0.3)   the effect after the rack (whole track), not the note's chain",
+               "-- a name gets its CC on a track the first time a pattern uses it there (a second or so);",
+               "-- a name that is not on the track is ignored there (Tidal says so once)", ""];
+    // one pF per name; "~name" (after the rack, static) shares it with "name"
+    var bindings = [], byBinding = {};
     for (i = 0; i < names.length; i++) {
         name = names[i];
-        var lp = lib.params[name], where = [];
-        for (j = 0; j < tracks.length; j++) {
-            var f = lib.tracks[tracks[j]].fx[name];
-            if (f && f.inPalette !== false) { where.push("t" + tracks[j] + " CC " + f.cc); }
+        var b = name.replace(/^~/, ""), stat = b !== name, where = byBinding[b];
+        if (!where) {
+            where = byBinding[b] = [];
+            bindings.push({ name: b, device: lib.params[name].device, param: lib.params[name].param, where: where });
         }
-        if (lp.device !== last) { out.push(""); out.push("-- " + lp.device); last = lp.device; }
-        out.push(pad(name, w) + "= pF \"" + name + "\"   -- " + lp.param +
-                 (where.length ? "  [" + where.join(", ") + "]" : "  [not in a palette]"));
+        for (j = 0; j < tracks.length; j++) {
+            var f = lib.tracks[tracks[j]].fx[name], tag = "t" + tracks[j] + (stat ? " static" : "");
+            if (f && f.inPalette !== false) { where.push(tag + " CC " + f.cc); }
+            else if (knownOf[tracks[j]][name]) { where.push(tag + " on first use"); }
+        }
+    }
+    var last = null;
+    for (i = 0; i < bindings.length; i++) {
+        var bd = bindings[i];
+        if (bd.device !== last) { out.push(""); out.push("-- " + bd.device); last = bd.device; }
+        out.push(pad(bd.name, w) + "= pF \"" + bd.name + "\"   -- " + bd.param +
+                 (bd.where.length ? "  [" + bd.where.join(", ") + "]" : "  [not on a track]"));
     }
 
     out.push("", ":{", "-- per track (MIDI channel): FX param -> CC",
-             "fxCC :: Map.Map Int (Map.Map String Double)", "fxCC = Map.fromList");
+             "fxCC :: Map.Map Int (Map.Map String Double)", "fxCC = fxMapOf");
     for (i = 0; i < tracks.length; i++) {
         var pairs = [], fx2 = lib.tracks[tracks[i]].fx;
         for (name in fx2) { if (fx2[name].inPalette !== false) { pairs.push([name, fx2[name].cc]); } }
         pairs.sort(function (a, b) { return a[1] - b[1]; });
-        out.push("  " + (i ? "," : "[") + " (" + tracks[i] + ", Map.fromList");
+        out.push("  " + (i ? "," : "[") + " (" + tracks[i] + ", fxMapOf");
         for (j = 0; j < pairs.length; j++) {
             out.push("      " + (j ? "," : "[") + " (\"" + pairs[j][0] + "\", " + pairs[j][1] + ")");
         }
@@ -908,7 +1114,7 @@ function writeTidal(lib) {
     out.push(tracks.length ? "  ]" : "  []");
 
     out.push("", "-- per track: FX param -> CCs switched on with it (cc, value 0..1)",
-             "fxOn :: Map.Map Int (Map.Map String [(Double, Double)])", "fxOn = Map.fromList");
+             "fxOn :: Map.Map Int (Map.Map String [(Double, Double)])", "fxOn = fxMapOf");
     for (i = 0; i < tracks.length; i++) {
         var groups = {}, keys = [], on = lib.tracks[tracks[i]].on;
         for (j = 0; j < on.length; j++) {
@@ -917,16 +1123,18 @@ function writeTidal(lib) {
             groups[wn].push("(" + on[j].cc + ", " + on[j].value + ")");
         }
         keys.sort();
-        out.push("  " + (i ? "," : "[") + " (" + tracks[i] + ", Map.fromList");
+        out.push("  " + (i ? "," : "[") + " (" + tracks[i] + ", fxMapOf");
         for (j = 0; j < keys.length; j++) {
             out.push("      " + (j ? "," : "[") + " (\"" + keys[j] + "\", [" + groups[keys[j]].join(", ") + "])");
         }
         out.push(keys.length ? "      ])" : "      [])");
     }
     out.push(tracks.length ? "  ]" : "  []");
-    out.push("", "toMidi :: Pattern Double -> ControlPattern -> ControlPattern",
-             "toMidi = toMidiWith fxCC fxOn", ":}", "");
-    return writeText(TIDAL_FILE, out.join("\n"));
+    out.push(":}", "",
+             "-- toMidi (toolz.tidal) reads these on every query: new CCs work at once, also in",
+             "-- patterns that are playing and in functions defined earlier (urm, reccal)",
+             "fxSetMaps fxCC fxOn", "");
+    return writeIfChanged(TIDAL_FILE, out.join("\n"));
 }
 
 // ---- mirror: chains 2..N follow chain 1 (structure + values) ----------------------
@@ -1138,6 +1346,11 @@ function helper() {
         if (Number(a[1]) === trackIndex()) { instRefill(a.slice(2).join(" ")); }
         return;
     }
+    if (addr === "/catalog") { catalogReady(); return; }
+    if (addr === "/fxwant") {
+        if (Number(a[1]) === trackChannel()) { wantName(a.slice(2).join(" ")); }
+        return;
+    }
     if (addr !== "/loaded") {
         if (addr === "/status" || addr === "/error") { post("EventFX: helper " + a.slice(1).join(" ") + "\n"); }
         return;
@@ -1200,6 +1413,9 @@ function updateEnd(ok, text, quiet) {
     if (!ok && !quiet) { say(text); }
     if (!ok) { refillNext = false; }
     if (updateDone) { var f = updateDone; updateDone = null; f(ok, text); }
+    // new effects / presets in Live's browser since the last fxscan get their names (in the
+    // background; does nothing before the first fxscan or when the browser has nothing new)
+    if (ok) { outlet(1, "/fxscan", "auto"); }
 }
 
 // /refill <track index> <name> from EventFXHelper (# i "name" in Tidal): chain 1 has the new
@@ -1221,6 +1437,114 @@ function instRefill(name) {
     }
     attempt();
 }
+// ---- mapping on demand --------------------------------------------------------
+// toMidi in Tidal met a name that has no CC on this track: /want -> helper -> /fxwant here.
+// The names that come within 150 ms are mapped together: CC from the pool, stored in the set,
+// toolz-fx.tidal rewritten (Neovim reloads it, toMidi uses it at once), then the engine finds the
+// new params in the chains (no mirror: the devices are there already). The answer goes back to
+// Tidal: /wanted <ch> <ok> <text> -> helper -> Tidal (UDP 11015).
+var wantQueue = [], wantTask = null, wantTries = 0;
+var wantAnswered = {};      // name -> last answer: the same "not on this track" is said only once
+
+function wantName(name) {
+    if (!name) { return; }
+    wantQueue.push(name);
+    if (!wantTask) {
+        wantTries = 0;
+        wantTask = new Task(wantParams, this);
+        wantTask.schedule(150);
+    }
+}
+
+function wantReply(ch, ok, name, text) {
+    if (!ok && wantAnswered[name] === text) { return; }
+    wantAnswered[name] = text;
+    outlet(1, "/wanted", ch, ok ? 1 : 0, text);
+}
+
+function wantParams() {
+    if ((mirror || !apiOk) && wantTries++ < 40) {     // mirroring / Live API not ready: up to ~12 s
+        wantTask = new Task(wantParams, this);
+        wantTask.schedule(300);
+        return;
+    }
+    wantTask = null;
+    var names = wantQueue, i, n;
+    wantQueue = [];
+    var ch = trackChannel();
+    if (!ch || !findHome() || !stateBox()) { return; }
+    var uniq = {}, list = [];
+    for (i = 0; i < names.length; i++) { if (!uniq[names[i]]) { uniq[names[i]] = true; list.push(names[i]); } }
+
+    calls = 0; api = null;
+    var rules = readRules();
+    myState = loadState();
+    var lib = setLibrary(), key = String(ch);
+    lib.tracks[key] = myState ? clone(myState) : { fx: {}, on: [] };
+    var tr = lib.tracks[key];
+    var scan = scanPalette(rules);
+    if (scan.error) {
+        for (i = 0; i < list.length; i++) { wantReply(ch, false, list[i], "track " + ch + ": " + scan.error); }
+        return;
+    }
+    var have = {}, want = {}, missing = [];
+    for (i = 0; i < scan.entries.length; i++) { if (scan.entries[i].tidal) { have[scan.entries[i].tidal] = scan.entries[i]; } }
+    for (i = 0; i < list.length; i++) {
+        n = list[i];
+        if (have[n]) { if (!tr.fx[n] || tr.fx[n].inPalette === false) { want[n] = true; } }
+        else { missing.push(n); }
+    }
+    for (i = 0; i < missing.length; i++) { wantReply(ch, false, missing[i], whyNot(ch, missing[i], have)); }
+
+    var w = wantClosure(scan.entries, want, tr), any = false;
+    for (n in w) { any = true; break; }
+    if (!any) { return; }
+    var rep = mergeTrack(lib, ch, scan.entries, w);
+    if (rep.error) {
+        for (n in want) { wantReply(ch, false, n, "track " + ch + ": " + rep.error + " - :fxclean frees CCs of effects you don't use"); }
+        return;
+    }
+    saveState(lib.tracks[key]);
+    if (!writeTidal(setLibrary())) { say("cannot write " + TIDAL_FILE); return; }
+    post("EventFX: on first use: " + rep.added.join(", ") + "\n");
+    for (n in want) {
+        var f = lib.tracks[key].fx[n], extra = [];
+        for (var m in w) {                           // the amount of the same device, mapped with it
+            if (m !== n && !want[m] && have[m] && devKey(have[m]) === devKey(have[n])) { extra.push(m.replace(/^~/, "")); }
+        }
+        wantReply(ch, true, n, "track " + ch + ": " + (n.charAt(0) === "~" ? "static (" + n.substr(1) + ")" : n) +
+                  " -> CC " + f.cc + (extra.length ? " (with " + extra.join(", ") + ")" : ""));
+    }
+    rebuildSoon(0);
+}
+
+// the engine picks up new params with a rebuild (no notes held: up to ~2 s, then anyway)
+function rebuildSoon(tries) {
+    if ((held > 0 || mirror) && tries < 20) {
+        var t = new Task(function () { rebuildSoon(tries + 1); }, this);
+        t.schedule(100);
+        return;
+    }
+    build();
+}
+
+// a name this track doesn't have: say why (and where it is, when it is somewhere else)
+function whyNot(ch, n, have) {
+    var plain = n.replace(/^~/, "");
+    if (n.charAt(0) === "~" && have[plain]) {
+        return "track " + ch + ": " + plain + " is in the rack chain, not after the rack - use it without static";
+    }
+    if (n.charAt(0) !== "~" && have["~" + n]) {
+        return "track " + ch + ": " + n + " is after the rack (whole track) - use static (" + n + " ...)";
+    }
+    var dev = catalogDeviceOf(plain);
+    if (dev) {
+        return "track " + ch + ": no " + dev + " " + (n.charAt(0) === "~" ? "after the rack" : "in chain 1") +
+               " - add it there and click update (" + plain + " is " + dev + "'s)";
+    }
+    return "track " + ch + ": no effect has a param called " + plain;
+}
+
 // update: chain 1 + track effects -> library (names, CC per track, resting values) -> files -> rebuild
 function update(note) {
     if (!apiReady()) { notReady("update"); return updateEnd(false, "Live API not ready", true); }
@@ -1242,30 +1566,31 @@ function update(note) {
 
     var scan = scanPalette(rules);
     if (scan.error) { return updateEnd(false, "update: " + scan.error); }
-    var rep = mergeTrack(lib, ch, scan.entries);
+    var rep = mergeTrack(lib, ch, scan.entries, {});     // no new CCs: those come on first use
     if (rep.error) { return updateEnd(false, "update: " + rep.error); }
 
     saveState(lib.tracks[String(ch)]);
     if (!writeTidal(setLibrary())) { return updateEnd(false, "update: cannot write " + TIDAL_FILE); }
 
-    var n = 0;
-    for (var i = 0; i < scan.entries.length; i++) { if (scan.entries[i].tidal) { n++; } }
+    var i;
     if (rep.added.length) { post("EventFX: new: " + rep.added.join(", ") + "\n"); }
     if (rep.dormant.length) { post("EventFX: not in the palette any more (CC kept for old clips until the pool is full): " + rep.dormant.join(", ") + "\n"); }
     if (rep.reclaimed.length) { post("EventFX: CC pool full, CC taken from: " + rep.reclaimed.join(", ") + "\n"); }
     if (rep.warn.length) { post("EventFX: same name, other param: " + rep.warn.join("; ") + "\n"); }
     if (scan.noPrimary.length) { post("EventFX: no main param found in: " + scan.noPrimary.join(", ") + " - add it to primaryByDevice in fx-rules.json\n"); }
-    post("EventFX: now in Tidal: :script ~/.config/tidal/toolz-fx.tidal\n");
-    var msg = "update: track " + ch + ": " + n + " params (" + rep.added.length + " new, " +
-              rep.dormant.length + " dormant)";
+    post("EventFX: toolz-fx.tidal rewritten - Neovim reloads it in Tidal (or :CheckTidal)\n");
+    var msg = "update: track " + ch + ": " + rep.mapped + " params with a CC, " + rep.known +
+              " more get one on first use" + (rep.dormant.length ? ", " + rep.dormant.length + " dormant" : "");
 
-    // resting values of the mapped chain params, for the mirror
-    var tr = lib.tracks[String(ch)], restMap = {};
+    // resting values of the mapped chain params, for the mirror (the others: as in chain 1)
+    var tr = lib.tracks[String(ch)], restMap = {}, onKeys = {};
+    for (i = 0; i < tr.on.length; i++) { onKeys[tr.on[i].key] = true; }
     for (i = 0; i < scan.entries.length; i++) {
         var e = scan.entries[i];
         if (e.tier !== "chain") { continue; }
         var f = e.tidal ? tr.fx[e.tidal] : null;
-        restMap[e.device + "/" + e.param + "#" + e.occurrence] = f ? restOf(f) : e.min;
+        if (f) { restMap[e.device + "/" + e.param + "#" + e.occurrence] = restOf(f); }
+        else if (e.role === "auto" && onKeys[e.key]) { restMap[e.device + "/" + e.param + "#" + e.occurrence] = e.min; }
     }
     ready = false;                               // no CC handling while the chains change
     say(msg + " - mirroring chains...");
@@ -1483,12 +1808,14 @@ function build() {
         var p = { min: e.min, max: e.max, neutral: e.neutral, alwaysOn: !!e.always_on,
                   track: 0, devTrack: 0, chains: [], devChains: [] };
 
-        var dev = scan.devices[dname];
+        // tier: "track" = the device after the rack (static in Tidal), "chain" = the rack chains;
+        // older entries have none: the track's device if there is one, else the chains
+        var dev = e.tier === "chain" ? null : scan.devices[dname];
         if (dev && dev[pname] && dev[pname][occ]) {
             p.track = dev[pname][occ];
             p.devTrack = (dev["Device On"] && dev["Device On"][0]) || 0;
             onTrack++;
-        } else {
+        } else if (e.tier !== "track") {
             for (var c = 0; c < nChains; c++) {
                 var cdev = scan.chains[c][dname];
                 if (cdev && cdev[pname] && cdev[pname][occ]) {
